@@ -1,0 +1,70 @@
+# BeezDesktop - Native Desktop Application
+# Using BeeWare (Toga + Briefcase) for cross-platform GUI
+
+[build-system]
+requires = ["briefcase"]
+
+[tool.briefcase]
+project_name = "BeezDesktop"
+bundle = "io.beez"
+version = "0.1.0"
+url = "https://beez.io"
+license.file = "LICENSE"
+author = "Beez Foundation"
+author_email = "dev@beez.io"
+
+[tool.briefcase.app.beezdesktop]
+formal_name = "Beez Desktop"
+description = "Desktop client for the Beez Network"
+long_description = """
+BeezDesktop is the native desktop application for interacting with the Beez Network.
+It provides wallet management, file upload/download, transaction handling,
+and blockchain exploration - all in a native GUI without requiring a web browser.
+"""
+icon = "src/beezdesktop/resources/beezdesktop"
+sources = ["src/beezdesktop"]
+requires = [
+    # GUI
+    "toga>=0.4.0",
+    
+    # Shared client core (local)
+    # NOTE: In development, use: pip install -e ../shared
+    
+    # Cryptography
+    "cryptography>=42.0.0",
+    "ecdsa>=0.18.0",
+    "mnemonic>=0.20",
+    "base58>=2.1.1",
+    
+    # Network
+    "pyzmq>=25.1.0",
+    "requests>=2.31.0",
+    
+    # Image processing (for previews)
+    "Pillow>=10.0.0",
+]
+
+# Linux-specific configuration
+[tool.briefcase.app.beezdesktop.linux]
+system_requires = [
+    "libgirepository1.0-dev",
+    "libcairo2-dev",
+    "libpango1.0-dev",
+    "libwebkit2gtk-4.1-dev",
+    "gir1.2-webkit2-4.1",
+]
+
+# macOS-specific configuration
+[tool.briefcase.app.beezdesktop.macOS]
+universal_build = true
+
+# Windows-specific configuration
+[tool.briefcase.app.beezdesktop.windows]
+use_full_install_path = false
+
+# Development dependencies
+[tool.briefcase.app.beezdesktop.dev]
+requires = [
+    "pytest",
+    "pytest-asyncio",
+]
