@@ -1,0 +1,9 @@
+# BeezDesktop configuration for local development
+# Uses localhost to connect to Docker containers
+
+[network]
+# Directory nodes - use localhost since we're outside Docker
+directory_nodes = ["localhost:5001", "localhost:5002", "localhost:5003"]
+
+[zmq]
+consensus_port = 5557

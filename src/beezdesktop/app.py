@@ -45,7 +45,6 @@ class BeezDesktopApp(toga.App):
     
     def startup(self):
         """Initialize the application UI."""
-        
         # Create main window
         self.main_window = toga.MainWindow(
             title=self.formal_name,
@@ -73,6 +72,9 @@ class BeezDesktopApp(toga.App):
         
         # Start background services
         self._start_background_services()
+        
+        # Auto-load saved wallet
+        self._auto_load_wallet()
     
     def _create_sidebar(self) -> toga.Box:
         """Create the navigation sidebar."""
@@ -114,6 +116,7 @@ class BeezDesktopApp(toga.App):
                 style=Pack(
                     padding=10,
                     width=200,
+                    color="#f0f0f0",       
                     background_color="#16213e"
                 )
             )
@@ -140,10 +143,52 @@ class BeezDesktopApp(toga.App):
         """Start background services like consensus listener."""
         if self.state:
             try:
-                start_consensus_listener(state=self.state, daemon=True)
-                print("[APP] Started consensus listener", flush=True)
+                import threading
+                
+                def custom_consensus_listener():
+                    import zmq
+                    import time
+                    import json
+                    
+                    print("[CONSENSUS] Starting listener...", flush=True)
+                    
+                    context = zmq.Context.instance()
+                    sub = context.socket(zmq.SUB)
+                    
+                    # Directory consensus ports (internal 5557 -> external)
+                    endpoints = [
+                        "tcp://127.0.0.1:5585",  # Directory1
+                        "tcp://127.0.0.1:5685",  # Directory2
+                        "tcp://127.0.0.1:5745",  # Directory3
+                    ]
+                    for ep in endpoints:
+                        sub.connect(ep)
+                        print(f"[CONSENSUS] Connected to {ep}", flush=True)
+                    
+                    sub.setsockopt_string(zmq.SUBSCRIBE, "consensus")
+                    print("[CONSENSUS] Waiting for network updates...", flush=True)
+                    
+                    while True:
+                        try:
+                            message = sub.recv_string(flags=zmq.NOBLOCK)
+                            _, payload = message.split(" ", 1)
+                            consensus_data = json.loads(payload)
+                            self.state.update_from_consensus(consensus_data)
+                            storage_count = len(self.state.active_nodes)
+                            chain_count = len(self.state.chain_nodes)
+                            print(f"[CONSENSUS] ✓ {storage_count} storage, {chain_count} chain nodes", flush=True)
+                        except zmq.Again:
+                            time.sleep(1)
+                        except Exception as e:
+                            print(f"[CONSENSUS] Error: {e}", flush=True)
+                            time.sleep(1)
+                
+                thread = threading.Thread(target=custom_consensus_listener, daemon=True)
+                thread.start()
+                print("[APP] Consensus listener started", flush=True)
+                
             except Exception as e:
-                print(f"[APP] Could not start consensus listener: {e}", flush=True)
+                print(f"[APP] Could not start consensus: {e}", flush=True)
     
     # === View Handlers ===
     
@@ -211,6 +256,21 @@ class BeezDesktopApp(toga.App):
             self.wallet_status_label.text = f"Connected: {addr}"
         else:
             self.wallet_status_label.text = "No wallet connected"
+    
+    def _auto_load_wallet(self):
+        """Auto-load saved wallet on startup."""
+        try:
+            from shared.client_core.wallet_storage import get_wallet_storage
+            storage = get_wallet_storage()
+            
+            if storage.has_saved_wallet() and self.client:
+                wallet_data = storage.load_wallet()
+                if wallet_data:
+                    self.client.connect_wallet(wallet_data['mnemonic'])
+                    self.update_wallet_status()
+                    print(f"[APP] Auto-loaded wallet: {wallet_data.get('address', '')[:16]}...", flush=True)
+        except Exception as e:
+            print(f"[APP] Could not auto-load wallet: {e}", flush=True)
 
 
 def main():

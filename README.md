@@ -42,7 +42,7 @@ BeezDesktop/
 
 1. Install system dependencies (Linux):
 ```bash
-sudo apt install libgirepository1.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev
+sudo apt install libgirepository2.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev
 ```
 
 2. Create virtual environment:
@@ -56,7 +56,6 @@ source venv/bin/activate  # Linux/macOS
 ```bash
 # From the BeezMaster root directory
 pip install -e shared/
-pip install -e BeezDesktop/
 ```
 
 4. Install Briefcase for packaging:

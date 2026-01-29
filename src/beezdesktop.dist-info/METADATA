@@ -1,0 +1,11 @@
+Metadata-Version: 2.1
+Briefcase-Version: 0.3.26
+Name: beezdesktop
+Formal-Name: Beez Desktop
+App-ID: it.stellab.beezdesktop
+Version: 0.1.0
+Home-page: https://stellab.it
+Download-URL: https://stellab.it
+Author: Enrico Zanardo
+Author-email: ezanardo@stellab.it
+Summary: Desktop client for the Beez Network

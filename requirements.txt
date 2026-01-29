@@ -1,0 +1,13 @@
+# BeezDesktop dependencies
+toga>=0.4.0
+cryptography>=42.0.0
+ecdsa>=0.18.0
+mnemonic>=0.20
+base58>=2.1.1
+pyzmq>=25.1.0
+requests>=2.31.0
+Pillow>=10.0.0
+briefcase>=0.3.26
+
+# Shared module (install from parent)
+# pip install -e ../shared/

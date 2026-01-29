@@ -2,19 +2,35 @@
 Blockchain View
 
 Blockchain explorer: view blocks, transactions, wallet lookup.
+Similar to BeezFE's BlockchainPage with drill-down capabilities.
 """
 
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
+import asyncio
 
 
 class BlockchainView:
-    """Blockchain explorer view."""
+    """Blockchain explorer view with auto-refresh."""
     
     def __init__(self, app):
         self.app = app
         self.search_input = None
+        self.info_labels = {}
+        self.blocks_table = None
+        self.current_offset = 0
+        self.blocks_per_page = 10
+        self._block_heights = []
+        
+        # Current block details for transaction drill-down
+        self._current_block = None
+        self._current_block_txs = []
+        
+        # Auto-refresh settings
+        self._auto_refresh_enabled = True
+        self._auto_refresh_interval = 30  # seconds
+        self._refresh_task = None
     
     def build(self) -> toga.Box:
         """Build the blockchain view."""
@@ -27,25 +43,100 @@ class BlockchainView:
         )
         container.add(header)
         
-        # Search section
-        search_section = self._build_search_section()
-        container.add(search_section)
-        
         # Info section
         info_section = self._build_info_section()
         container.add(info_section)
         
+        # Search section
+        search_section = self._build_search_section()
+        container.add(search_section)
+        
+        # Blocks section
+        blocks_section = self._build_blocks_section()
+        container.add(blocks_section)
+        
+        # Load data
+        asyncio.create_task(self._load_blockchain_info())
+        asyncio.create_task(self._load_blocks())
+        
+        # Start auto-refresh
+        if self._auto_refresh_enabled:
+            self._refresh_task = asyncio.create_task(self._auto_refresh_loop())
+        
         return container
+    
+    async def _auto_refresh_loop(self):
+        """Auto-refresh blockchain data periodically."""
+        while self._auto_refresh_enabled:
+            await asyncio.sleep(self._auto_refresh_interval)
+            try:
+                await self._load_blockchain_info()
+                # Only refresh blocks if on first page
+                if self.current_offset == 0:
+                    await self._load_blocks()
+            except Exception as e:
+                print(f"[BLOCKCHAIN] Auto-refresh error: {e}", flush=True)
+    
+    def _build_info_section(self) -> toga.Box:
+        """Build the blockchain info section."""
+        section = toga.Box(
+            style=Pack(direction=COLUMN, padding=10, background_color="#e3f2fd")
+        )
+        
+        header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
+        
+        header = toga.Label(
+            "Blockchain Status",
+            style=Pack(font_size=16, font_weight="bold", flex=1)
+        )
+        header_row.add(header)
+        
+        refresh_btn = toga.Button(
+            "Refresh",
+            on_press=lambda w: asyncio.create_task(self._load_blockchain_info()),
+            style=Pack(width=80, padding=(0, 5, 0, 0))
+        )
+        header_row.add(refresh_btn)
+        
+        # Auto-refresh indicator
+        self.auto_refresh_label = toga.Label(
+            "Auto: ON",
+            style=Pack(padding=(5, 0, 0, 5), font_size=10, color="#2e7d32")
+        )
+        header_row.add(self.auto_refresh_label)
+        
+        section.add(header_row)
+        
+        # Info grid
+        info_grid = toga.Box(style=Pack(direction=ROW, padding=5))
+        
+        info_items = [
+            ("block_height", "Block Height"),
+            ("mempool_size", "Pending TXs"),
+            ("total_wallets", "Total Wallets"),
+        ]
+        
+        for key, label_text in info_items:
+            card = toga.Box(style=Pack(direction=COLUMN, padding=10, width=150))
+            value_label = toga.Label("--", style=Pack(font_size=20, font_weight="bold"))
+            self.info_labels[key] = value_label
+            card.add(value_label)
+            card.add(toga.Label(label_text, style=Pack(font_size=11, color="#666666")))
+            info_grid.add(card)
+        
+        section.add(info_grid)
+        
+        return section
     
     def _build_search_section(self) -> toga.Box:
         """Build the search section."""
         section = toga.Box(
-            style=Pack(direction=COLUMN, padding=10, background_color="#f5f5f5")
+            style=Pack(direction=COLUMN, padding=10)
         )
         
         header = toga.Label(
             "Search",
-            style=Pack(font_size=16, font_weight="bold", padding=(0, 0, 10, 0))
+            style=Pack(font_size=14, font_weight="bold", padding=(10, 0, 5, 0))
         )
         section.add(header)
         
@@ -53,7 +144,7 @@ class BlockchainView:
         search_row = toga.Box(style=Pack(direction=ROW, padding=5))
         
         self.search_input = toga.TextInput(
-            placeholder="Enter transaction hash, block height, or wallet address...",
+            placeholder="Enter wallet address (bez...) or block height...",
             style=Pack(flex=1, padding=(0, 10, 0, 0))
         )
         search_row.add(self.search_input)
@@ -67,64 +158,486 @@ class BlockchainView:
         
         section.add(search_row)
         
+        # Search result area
+        self.search_result_box = toga.Box(style=Pack(direction=COLUMN, padding=5))
+        section.add(self.search_result_box)
+        
         return section
     
-    def _build_info_section(self) -> toga.Box:
-        """Build the blockchain info section."""
+    def _build_blocks_section(self) -> toga.Box:
+        """Build the blocks list section."""
         section = toga.Box(style=Pack(direction=COLUMN, padding=10, flex=1))
         
         header = toga.Label(
-            "Blockchain Info",
-            style=Pack(font_size=16, font_weight="bold", padding=(20, 0, 10, 0))
+            "Latest Blocks",
+            style=Pack(font_size=14, font_weight="bold", padding=(10, 0, 10, 0))
         )
         section.add(header)
         
-        # Placeholder info
-        info_items = [
-            "Latest Block: Loading...",
-            "Total Blocks: Loading...",
-            "Consensus: Loading...",
-        ]
+        # Blocks table
+        self.blocks_table = toga.Table(
+            headings=["Height", "Hash", "Transactions", "Timestamp"],
+            data=[],
+            style=Pack(flex=1),
+            on_select=self._on_block_selected
+        )
+        section.add(self.blocks_table)
         
-        for item in info_items:
-            label = toga.Label(item, style=Pack(padding=5))
-            section.add(label)
+        # Pagination
+        pagination_row = toga.Box(style=Pack(direction=ROW, padding=(10, 0, 0, 0)))
+        
+        prev_btn = toga.Button(
+            "← Previous",
+            on_press=self._on_prev_page,
+            style=Pack(width=100)
+        )
+        pagination_row.add(prev_btn)
+        
+        self.page_label = toga.Label(
+            "Page 1",
+            style=Pack(flex=1, padding=(5, 10, 5, 10))
+        )
+        pagination_row.add(self.page_label)
+        
+        next_btn = toga.Button(
+            "Next →",
+            on_press=self._on_next_page,
+            style=Pack(width=100)
+        )
+        pagination_row.add(next_btn)
+        
+        section.add(pagination_row)
         
         return section
     
-    def _on_search(self, widget):
-        """Handle search button."""
+    async def _load_blockchain_info(self):
+        """Load blockchain info from API."""
+        if not self.app.client:
+            return
+        
+        loop = asyncio.get_event_loop()
+        result, status = await loop.run_in_executor(
+            None, self.app.client.get_blockchain_info
+        )
+        
+        if status == 200:
+            blockchain = result.get("blockchain", result)
+            self.info_labels["block_height"].text = str(blockchain.get("current_block", "--"))
+            self.info_labels["mempool_size"].text = str(blockchain.get("mempool_size", "--"))
+            self.info_labels["total_wallets"].text = str(blockchain.get("total_wallets", "--"))
+        else:
+            print(f"[BLOCKCHAIN] Info error: {result.get('error', 'Unknown')}", flush=True)
+    
+    async def _load_blocks(self):
+        """Load blocks from API."""
+        if not self.app.client or not self.blocks_table:
+            return
+        
+        loop = asyncio.get_event_loop()
+        result, status = await loop.run_in_executor(
+            None,
+            lambda: self.app.client.get_blocks(self.blocks_per_page, self.current_offset)
+        )
+        
+        self.blocks_table.data.clear()
+        self._block_heights = []
+        
+        if status == 200:
+            blocks = result.get("blocks", [])
+            
+            for block in blocks:
+                height = str(block.get("height", block.get("block_height", "--")))
+                self._block_heights.append(height)
+                
+                block_hash = block.get("hash", block.get("block_hash", ""))
+                short_hash = f"{block_hash[:8]}...{block_hash[-8:]}" if len(block_hash) > 16 else block_hash
+                
+                timestamp = block.get("timestamp", "")
+                if isinstance(timestamp, dict):
+                    timestamp = timestamp.get("timestamp", "")
+                if timestamp and len(str(timestamp)) > 19:
+                    timestamp = str(timestamp)[:19]
+                
+                tx_count = block.get("tx_count", block.get("transaction_count", 0))
+                
+                self.blocks_table.data.append([
+                    height,
+                    short_hash,
+                    str(tx_count),
+                    str(timestamp)
+                ])
+            
+            # Update page label
+            page_num = (self.current_offset // self.blocks_per_page) + 1
+            self.page_label.text = f"Page {page_num}"
+        else:
+            error = result.get('error', 'Unknown')
+            print(f"[BLOCKCHAIN] Blocks error: {error}", flush=True)
+            self.blocks_table.data.append(["--", f"Error: {error[:30]}", "--", "--"])
+    
+    def _on_prev_page(self, widget):
+        """Previous page of blocks."""
+        if self.current_offset >= self.blocks_per_page:
+            self.current_offset -= self.blocks_per_page
+            asyncio.create_task(self._load_blocks())
+    
+    def _on_next_page(self, widget):
+        """Next page of blocks."""
+        self.current_offset += self.blocks_per_page
+        asyncio.create_task(self._load_blocks())
+    
+    def _on_block_selected(self, widget):
+        """Handle block selection."""
+        try:
+            # Check selection safely - may fail if data was refreshed
+            selection = widget.selection
+            if not selection:
+                return
+            
+            # Get height from selection using repr string (safer than accessing .selection)
+            row_str = repr(selection)
+            height = None
+            
+            if "height='" in row_str:
+                import re
+                match = re.search(r"height='(\d+)'", row_str)
+                if match:
+                    height = match.group(1)
+            
+            if height and str(height) != "--":
+                asyncio.create_task(self._show_block_details(str(height)))
+        except (ValueError, AttributeError) as e:
+            # Silently ignore - happens when table data is refreshed during selection
+            pass
+        except Exception as e:
+            print(f"[BLOCKCHAIN] Selection error: {e}", flush=True)
+    
+    def _truncate_hash(self, hash_str: str, length: int = 16) -> str:
+        """Truncate hash for display."""
+        if not hash_str or len(hash_str) <= length:
+            return hash_str or "N/A"
+        return f"{hash_str[:length//2]}...{hash_str[-length//2:]}"
+    
+    def _format_timestamp(self, timestamp) -> str:
+        """Format timestamp for display."""
+        if timestamp and isinstance(timestamp, dict):
+            return timestamp.get("timestamp", "N/A")
+        if isinstance(timestamp, str):
+            return timestamp[:19] if len(timestamp) > 19 else timestamp
+        return "N/A"
+    
+    async def _show_block_details(self, height: str):
+        """Show detailed block dialog with transactions list."""
+        if not self.app.client:
+            return
+        
+        loop = asyncio.get_event_loop()
+        result, status = await loop.run_in_executor(
+            None,
+            lambda: self.app.client.get_block_by_height(int(height))
+        )
+        
+        if status != 200:
+            await self.app.main_window.dialog(
+                toga.ErrorDialog("Error", f"Failed to load block #{height}")
+            )
+            return
+        
+        block = result.get("block", result)
+        self._current_block = block
+        
+        # Extract block information
+        block_height = block.get("height", height)
+        block_hash = block.get("hash", block.get("header", {}).get("hash", "N/A"))
+        prev_hash = block.get("previous_hash", block.get("header", {}).get("previous_hash", 
+                   block.get("header", {}).get("prev_hash", "N/A")))
+        timestamp = block.get("timestamp", block.get("node", {}).get("timestamp", "N/A"))
+        miner = block.get("miner", block.get("miner_address", 
+               block.get("node", {}).get("miner_address", "N/A")))
+        
+        # Get transactions
+        txs = block.get("txs", block.get("body", {}).get("txs", []))
+        self._current_block_txs = txs
+        
+        # Build detailed block info
+        details = (
+            f"━━━ Block Information ━━━\n\n"
+            f"Height: #{block_height}\n"
+            f"Hash: {block_hash}\n"
+            f"Previous Hash: {self._truncate_hash(prev_hash, 32)}\n"
+            f"Timestamp: {self._format_timestamp(timestamp)}\n"
+            f"Miner: {self._truncate_hash(miner, 24)}\n\n"
+            f"━━━ Transactions ({len(txs)}) ━━━\n\n"
+        )
+        
+        if not txs:
+            details += "No transactions in this block.\n"
+        else:
+            for i, tx in enumerate(txs[:10]):  # Show first 10
+                tx_type = tx.get("type", "transfer")
+                tx_hash = tx.get("tx_hash", "")
+                amount = tx.get("amount", "0")
+                
+                # Get addresses based on type
+                if tx_type == "upload":
+                    from_addr = tx.get("uploader", "N/A")
+                    to_addr = "Storage"
+                else:
+                    from_addr = tx.get("sender", "N/A")
+                    to_addr = tx.get("recipient", "N/A")
+                
+                details += (
+                    f"{i+1}. [{tx_type.upper()}] {self._truncate_hash(tx_hash, 16)}\n"
+                    f"   From: {self._truncate_hash(from_addr, 16)} → To: {self._truncate_hash(to_addr, 16)}\n"
+                    f"   Amount: {amount}\n\n"
+                )
+            
+            if len(txs) > 10:
+                details += f"... and {len(txs) - 10} more transactions\n"
+        
+        details += "\n━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        details += "Tap 'View Transactions' to see all transaction details."
+        
+        # Show block details with option to view transactions
+        if txs:
+            result = await self.app.main_window.dialog(
+                toga.QuestionDialog(
+                    f"Block #{block_height}",
+                    details + "\n\nView transaction list?"
+                )
+            )
+            if result:
+                await self._show_transactions_list(block_height, txs)
+        else:
+            await self.app.main_window.dialog(
+                toga.InfoDialog(f"Block #{block_height}", details)
+            )
+    
+    async def _show_transactions_list(self, block_height, txs):
+        """Show list of transactions in a block."""
+        if not txs:
+            return
+        
+        # Build transaction selection list
+        tx_options = []
+        for i, tx in enumerate(txs):
+            tx_type = tx.get("type", "transfer")
+            tx_hash = tx.get("tx_hash", "unknown")
+            amount = tx.get("amount", "0")
+            tx_options.append(f"{i+1}. [{tx_type}] {self._truncate_hash(tx_hash, 12)} - {amount}")
+        
+        # Ask which transaction to view
+        prompt = (
+            f"Block #{block_height} contains {len(txs)} transaction(s).\n\n"
+            f"Enter transaction number (1-{len(txs)}) to view details:"
+        )
+        
+        # Use a simple number input for selection
+        for i, tx in enumerate(txs):
+            view_more = await self.app.main_window.dialog(
+                toga.QuestionDialog(
+                    f"Transaction {i+1}/{len(txs)}",
+                    self._format_transaction_details(tx, block_height) + 
+                    "\n\nView next transaction?"
+                )
+            )
+            if not view_more:
+                break
+    
+    def _format_transaction_details(self, tx, block_height) -> str:
+        """Format transaction details for display."""
+        tx_type = tx.get("type", "transfer")
+        tx_hash = tx.get("tx_hash", "N/A")
+        amount = tx.get("amount", "0")
+        timestamp = self._format_timestamp(tx.get("timestamp", "N/A"))
+        
+        details = (
+            f"━━━ Transaction Details ━━━\n\n"
+            f"Hash: {tx_hash}\n"
+            f"Type: {tx_type.upper()}\n"
+            f"Amount: {amount}\n"
+            f"Block: #{block_height}\n"
+            f"Timestamp: {timestamp}\n\n"
+        )
+        
+        if tx_type == "upload":
+            details += (
+                f"━━━ Upload Details ━━━\n\n"
+                f"Uploader: {tx.get('uploader', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"File Name: {tx.get('file_name', 'N/A')}\n"
+                f"File Size: {tx.get('file_size', 'N/A')} bytes\n"
+                f"Chunks: {tx.get('num_chunks', 'N/A')}\n"
+                f"Guardian DAM: {self._truncate_hash(tx.get('guardian_dam_id', 'N/A'), 16)}\n"
+            )
+        elif tx_type == "rollback":
+            details += (
+                f"━━━ Rollback Details ━━━\n\n"
+                f"Target TX: {self._truncate_hash(tx.get('target_tx_hash', 'N/A'), 24)}\n"
+                f"From: {tx.get('recipient', 'N/A')}\n"
+                f"To: {tx.get('sender', 'N/A')}\n"
+            )
+        elif tx_type == "freeze":
+            details += (
+                f"━━━ Freeze Details ━━━\n\n"
+                f"Target: {tx.get('target_address', 'N/A')}\n"
+                f"Duration: {tx.get('duration_blocks', 'N/A')} blocks\n"
+                f"Reason: {tx.get('reason', 'N/A')}\n"
+            )
+        elif tx_type in ("penalty", "escrow", "escrow_release"):
+            details += (
+                f"━━━ {tx_type.replace('_', ' ').title()} Details ━━━\n\n"
+                f"Node ID: {self._truncate_hash(tx.get('target_node_id', tx.get('storage_node_id', 'N/A')), 16)}\n"
+                f"Node Address: {self._truncate_hash(tx.get('target_node_address', tx.get('storage_node_address', 'N/A')), 16)}\n"
+                f"DAM: {self._truncate_hash(tx.get('dam_address', 'N/A'), 16)}\n"
+            )
+        else:
+            # Normal transfer
+            details += (
+                f"━━━ Transfer Details ━━━\n\n"
+                f"From: {tx.get('sender', 'N/A')}\n"
+                f"To: {tx.get('recipient', 'N/A')}\n"
+            )
+        
+        return details
+    
+    async def _on_search(self, widget):
+        """Handle search."""
         query = self.search_input.value.strip()
         
         if not query:
             return
         
-        # Determine search type and execute
+        # Clear previous results
+        for child in list(self.search_result_box.children):
+            self.search_result_box.remove(child)
+        
+        searching_label = toga.Label("Searching...", style=Pack(padding=5, color="#666666"))
+        self.search_result_box.add(searching_label)
+        
         if query.startswith("bez"):
-            # Wallet address
-            self.app.main_window.info_dialog(
-                "Wallet Search",
-                f"Searching for wallet: {query[:20]}...\n"
-                "Wallet lookup will be implemented."
-            )
-        elif query.startswith("0x") or len(query) == 64:
-            # Transaction hash
-            self.app.main_window.info_dialog(
-                "Transaction Search",
-                f"Searching for transaction: {query[:20]}...\n"
-                "Transaction lookup will be implemented."
-            )
+            await self._search_wallet(query)
+        elif len(query) == 64:  # Likely a hash
+            await self._search_transaction(query)
         else:
-            # Block height
             try:
                 block_height = int(query)
-                self.app.main_window.info_dialog(
-                    "Block Search",
-                    f"Searching for block #{block_height}\n"
-                    "Block lookup will be implemented."
-                )
+                await self._search_block(block_height)
             except ValueError:
-                self.app.main_window.error_dialog(
-                    "Invalid Query",
-                    "Please enter a valid wallet address, transaction hash, or block number."
+                await self._show_search_result("Invalid query. Enter wallet address, block height, or tx hash.")
+    
+    async def _search_wallet(self, address: str):
+        """Search wallet and show details with clickable transactions."""
+        if not self.app.client:
+            return
+        
+        loop = asyncio.get_event_loop()
+        
+        # Get balance
+        balance_result, balance_status = await loop.run_in_executor(
+            None,
+            lambda: self.app.client.get_wallet_balance(address)
+        )
+        
+        # Get transactions
+        tx_result, tx_status = await loop.run_in_executor(
+            None,
+            lambda: self.app.client.get_wallet_transactions(address, 10, 0)
+        )
+        
+        # Clear and show results
+        for child in list(self.search_result_box.children):
+            self.search_result_box.remove(child)
+        
+        result_box = toga.Box(style=Pack(direction=COLUMN, padding=10, background_color="#f5f5f5"))
+        
+        # Header
+        result_box.add(toga.Label(
+            f"Wallet: {address}",
+            style=Pack(font_weight="bold", padding=(0, 0, 10, 0))
+        ))
+        
+        # Balance
+        if balance_status == 200:
+            balance = balance_result.get('balance', 0)
+            result_box.add(toga.Label(f"Balance: {balance} BZT", style=Pack(padding=3, font_size=14)))
+        else:
+            result_box.add(toga.Label(f"Balance: Error", style=Pack(padding=3, color="#cc0000")))
+        
+        # Transactions
+        if tx_status == 200:
+            txs = tx_result.get('transactions', [])
+            result_box.add(toga.Label(
+                f"\nRecent Transactions ({len(txs)}):",
+                style=Pack(padding=(10, 0, 5, 0), font_weight="bold")
+            ))
+            
+            for tx in txs[:5]:
+                tx_type = tx.get('type', 'transfer')
+                tx_hash = tx.get('tx_hash', 'unknown')
+                amount = tx.get('amount', '0')
+                
+                tx_row = toga.Box(style=Pack(direction=ROW, padding=3))
+                tx_row.add(toga.Label(
+                    f"[{tx_type}] {self._truncate_hash(tx_hash, 12)} - {amount}",
+                    style=Pack(flex=1, font_size=11)
+                ))
+                
+                # View button
+                view_btn = toga.Button(
+                    "View",
+                    on_press=lambda w, t=tx: asyncio.create_task(self._show_tx_details(t)),
+                    style=Pack(width=50, height=25)
                 )
+                tx_row.add(view_btn)
+                
+                result_box.add(tx_row)
+        
+        self.search_result_box.add(result_box)
+    
+    async def _search_transaction(self, tx_hash: str):
+        """Search transaction by hash."""
+        if not self.app.client:
+            return
+        
+        loop = asyncio.get_event_loop()
+        result, status = await loop.run_in_executor(
+            None,
+            lambda: self.app.client.get_transaction(tx_hash)
+        )
+        
+        # Clear and show results
+        for child in list(self.search_result_box.children):
+            self.search_result_box.remove(child)
+        
+        if status == 200:
+            tx = result.get('transaction', result)
+            block_height = tx.get('block_height', 'N/A')
+            details = self._format_transaction_details(tx, block_height)
+            await self.app.main_window.dialog(
+                toga.InfoDialog("Transaction Details", details)
+            )
+        else:
+            self.search_result_box.add(toga.Label(
+                f"Transaction not found: {self._truncate_hash(tx_hash, 24)}",
+                style=Pack(padding=5, color="#cc0000")
+            ))
+    
+    async def _search_block(self, height: int):
+        """Search block by height."""
+        await self._show_block_details(str(height))
+    
+    async def _show_tx_details(self, tx):
+        """Show transaction details dialog."""
+        block_height = tx.get('block_height', 'N/A')
+        details = self._format_transaction_details(tx, block_height)
+        await self.app.main_window.dialog(
+            toga.InfoDialog("Transaction Details", details)
+        )
+    
+    async def _show_search_result(self, message: str):
+        """Show search result message."""
+        for child in list(self.search_result_box.children):
+            self.search_result_box.remove(child)
+        
+        self.search_result_box.add(toga.Label(message, style=Pack(padding=5, color="#666666")))

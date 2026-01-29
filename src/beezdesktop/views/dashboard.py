@@ -26,8 +26,13 @@ class DashboardView:
         )
         container.add(header)
         
+        # Wallet status card (if connected)
+        if self.app.client and self.app.client.is_wallet_connected():
+            wallet_card = self._build_wallet_card()
+            container.add(wallet_card)
+        
         # Quick actions row
-        actions_box = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 20, 0)))
+        actions_box = toga.Box(style=Pack(direction=ROW, padding=(10, 0, 20, 0)))
         
         # Wallet action card
         wallet_card = self._create_action_card(
@@ -67,6 +72,33 @@ class DashboardView:
         container.add(status_box)
         
         return container
+    
+    def _build_wallet_card(self) -> toga.Box:
+        """Build wallet status card for dashboard."""
+        wallet = self.app.client.get_current_wallet()
+        
+        card = toga.Box(
+            style=Pack(
+                direction=COLUMN,
+                padding=15,
+                background_color="#e3f2fd",
+                width=500
+            )
+        )
+        
+        title = toga.Label(
+            "Connected Wallet",
+            style=Pack(font_size=14, font_weight="bold", color="#1565c0", padding=(0, 0, 5, 0))
+        )
+        card.add(title)
+        
+        address = toga.Label(
+            f"Address: {wallet.address if wallet else 'Unknown'}",
+            style=Pack(font_size=12, color="#1976d2")
+        )
+        card.add(address)
+        
+        return card
     
     def _create_action_card(self, title: str, description: str, handler) -> toga.Box:
         """Create an action card widget."""
@@ -111,15 +143,43 @@ class DashboardView:
         chain_count = len(self.app.state.chain_nodes) if self.app.state else 0
         dam_count = len(self.app.state.manager_nodes) if self.app.state else 0
         
-        status_items = [
-            f"Storage Nodes: {storage_count}",
-            f"Chain Nodes: {chain_count}",
-            f"DAM Nodes: {dam_count}",
-        ]
+        total = storage_count + chain_count + dam_count
         
-        for item in status_items:
-            label = toga.Label(item, style=Pack(padding=5))
-            status_box.add(label)
+        if total == 0:
+            status_label = toga.Label(
+                "Waiting for consensus... (runs every ~30s)\nMake sure Docker network is running.",
+                style=Pack(padding=5, color="#888888")
+            )
+            status_box.add(status_label)
+        else:
+            # Connected indicator
+            connected_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
+            connected_icon = toga.Label("●", style=Pack(color="#4caf50", font_size=14, padding=(0, 5, 0, 0)))
+            connected_label = toga.Label(
+                f"Connected to {total} nodes",
+                style=Pack(color="#2e7d32", font_weight="bold")
+            )
+            connected_row.add(connected_icon)
+            connected_row.add(connected_label)
+            status_box.add(connected_row)
+            
+            # Node counts
+            status_items = [
+                f"Storage Nodes: {storage_count}",
+                f"Chain Nodes: {chain_count}",
+                f"DAM Nodes: {dam_count}",
+            ]
+            for item in status_items:
+                label = toga.Label(item, style=Pack(padding=3))
+                status_box.add(label)
+        
+        # Refresh button
+        refresh_btn = toga.Button(
+            "Refresh",
+            on_press=lambda w: self.app._show_dashboard(),
+            style=Pack(width=80, padding=(10, 0, 0, 0))
+        )
+        status_box.add(refresh_btn)
         
         return status_box
     

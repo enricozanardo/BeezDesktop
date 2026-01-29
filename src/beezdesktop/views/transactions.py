@@ -7,6 +7,7 @@ Transaction management: send BZT, view history.
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
+import asyncio
 
 
 class TransactionsView:
@@ -16,6 +17,7 @@ class TransactionsView:
         self.app = app
         self.recipient_input = None
         self.amount_input = None
+        self.history_table = None
     
     def build(self) -> toga.Box:
         """Build the transactions view."""
@@ -41,9 +43,12 @@ class TransactionsView:
         send_section = self._build_send_section()
         container.add(send_section)
         
-        # Transaction history (placeholder)
+        # Transaction history
         history_section = self._build_history_section()
         container.add(history_section)
+        
+        # Load history
+        asyncio.create_task(self._load_transaction_history())
         
         return container
     
@@ -61,14 +66,14 @@ class TransactionsView:
         
         # Recipient input
         recipient_label = toga.Label(
-            "Recipient Address:",
+            "Recipient Address (paste with Ctrl+V):",
             style=Pack(padding=(5, 0, 5, 0))
         )
         section.add(recipient_label)
         
         self.recipient_input = toga.TextInput(
-            placeholder="bez...",
-            style=Pack(width=400, padding=(0, 0, 10, 0))
+            placeholder="bez... (Ctrl+V to paste)",
+            style=Pack(width=450, padding=(0, 0, 10, 0))
         )
         section.add(self.recipient_input)
         
@@ -93,28 +98,48 @@ class TransactionsView:
         )
         section.add(send_btn)
         
+        # Status label
+        self.status_label = toga.Label(
+            "",
+            style=Pack(padding=(10, 0, 0, 0), color="#666666")
+        )
+        section.add(self.status_label)
+        
         return section
     
     def _build_history_section(self) -> toga.Box:
         """Build the transaction history section."""
         section = toga.Box(style=Pack(direction=COLUMN, padding=10, flex=1))
         
+        # Header with refresh
+        header_row = toga.Box(style=Pack(direction=ROW, padding=(20, 0, 10, 0)))
+        
         header = toga.Label(
             "Transaction History",
-            style=Pack(font_size=16, font_weight="bold", padding=(20, 0, 10, 0))
+            style=Pack(font_size=16, font_weight="bold", flex=1)
         )
-        section.add(header)
+        header_row.add(header)
         
-        # Placeholder for transaction list
-        placeholder = toga.Label(
-            "Transaction history will appear here.",
-            style=Pack(padding=20, color="#888888")
+        refresh_btn = toga.Button(
+            "Refresh",
+            on_press=lambda w: asyncio.create_task(self._load_transaction_history()),
+            style=Pack(width=80)
         )
-        section.add(placeholder)
+        header_row.add(refresh_btn)
+        
+        section.add(header_row)
+        
+        # Transaction table
+        self.history_table = toga.Table(
+            headings=["Type", "Amount", "To/From", "Block", "Status"],
+            data=[],
+            style=Pack(flex=1)
+        )
+        section.add(self.history_table)
         
         return section
     
-    def _on_send_transaction(self, widget):
+    async def _on_send_transaction(self, widget):
         """Handle send transaction button."""
         if not self.app.client:
             return
@@ -124,16 +149,14 @@ class TransactionsView:
         
         # Validation
         if not recipient:
-            self.app.main_window.error_dialog(
-                "Error",
-                "Please enter a recipient address."
+            await self.app.main_window.dialog(
+                toga.ErrorDialog("Error", "Please enter a recipient address.")
             )
             return
         
         if not recipient.startswith("bez"):
-            self.app.main_window.error_dialog(
-                "Error",
-                "Invalid recipient address. Must start with 'bez'."
+            await self.app.main_window.dialog(
+                toga.ErrorDialog("Error", "Invalid recipient address. Must start with 'bez'.")
             )
             return
         
@@ -142,33 +165,112 @@ class TransactionsView:
             if amount <= 0:
                 raise ValueError()
         except (ValueError, TypeError):
-            self.app.main_window.error_dialog(
-                "Error",
-                "Please enter a valid amount."
+            await self.app.main_window.dialog(
+                toga.ErrorDialog("Error", "Please enter a valid amount.")
             )
             return
         
-        # Create and send transaction
+        # Update status
+        self.status_label.text = "Sending transaction..."
+        
+        # Send transaction asynchronously
         try:
-            tx = self.app.client.create_transaction(amount, recipient)
-            response, status = self.app.client.send_transaction(tx)
+            loop = asyncio.get_event_loop()
             
-            if status == 200:
-                self.app.main_window.info_dialog(
-                    "Success",
-                    f"Transaction sent!\nHash: {tx.tx_hash[:16]}..."
+            # Use the new HTTP API method
+            response, status = await loop.run_in_executor(
+                None,
+                lambda: self.app.client.create_and_send_transaction(amount, recipient)
+            )
+            
+            if status in (200, 201, 202):
+                tx_hash = response.get('tx_hash', 'submitted')
+                self.status_label.text = f"✓ Sent: {tx_hash[:16]}..."
+                await self.app.main_window.dialog(
+                    toga.InfoDialog(
+                        "Success",
+                        f"Transaction sent!\n\n"
+                        f"Hash: {tx_hash[:32]}...\n"
+                        f"Amount: {amount} BZT\n"
+                        f"To: {recipient[:20]}..."
+                    )
                 )
                 # Clear inputs
                 self.recipient_input.value = ""
                 self.amount_input.value = ""
+                # Refresh history
+                await self._load_transaction_history()
             else:
-                self.app.main_window.error_dialog(
-                    "Error",
-                    f"Transaction failed: {response.get('error', 'Unknown error')}"
+                error_msg = response.get('error', response.get('message', 'Unknown error'))
+                self.status_label.text = f"✗ Failed: {error_msg}"
+                await self.app.main_window.dialog(
+                    toga.ErrorDialog("Error", f"Transaction failed: {error_msg}")
                 )
                 
         except Exception as e:
-            self.app.main_window.error_dialog(
-                "Error",
-                f"Failed to send transaction: {e}"
+            self.status_label.text = f"✗ Error: {e}"
+            await self.app.main_window.dialog(
+                toga.ErrorDialog("Error", f"Failed to send transaction: {e}")
             )
+    
+    async def _load_transaction_history(self):
+        """Load transaction history."""
+        if not self.app.client or not self.history_table:
+            return
+        
+        if not self.app.client.is_wallet_connected():
+            return
+        
+        loop = asyncio.get_event_loop()
+        
+        try:
+            result, status = await loop.run_in_executor(
+                None,
+                lambda: self.app.client.get_wallet_transactions(None, 20, 0, "all")
+            )
+            
+            self.history_table.data.clear()
+            
+            if status == 200 and result:
+                transactions = result.get('transactions', [])
+                if transactions is None:
+                    transactions = []
+                    
+                wallet = self.app.client.get_current_wallet()
+                my_address = wallet.address if wallet else ""
+                
+                for tx in transactions:
+                    if tx is None:
+                        continue
+                    tx_type = tx.get('type', 'transfer') or 'transfer'
+                    sender = tx.get('sender', '') or ''
+                    recipient = tx.get('recipient', '') or ''
+                    amount = tx.get('amount', '0') or '0'
+                    block_height = tx.get('block_height', '--') or '--'
+                    
+                    # Determine if sent or received
+                    if sender == my_address:
+                        direction = f"To: {recipient[:12]}..." if recipient else "To: --"
+                        display_type = f"↑ {tx_type}"
+                    else:
+                        direction = f"From: {sender[:12]}..." if sender else "From: --"
+                        display_type = f"↓ {tx_type}"
+                    
+                    self.history_table.data.append([
+                        display_type,
+                        str(amount),
+                        direction,
+                        str(block_height),
+                        "Confirmed"
+                    ])
+                    
+                if not transactions:
+                    self.history_table.data.append([
+                        "--", "No transactions yet", "--", "--", "--"
+                    ])
+            else:
+                error = result.get('error', 'Unknown') if result else 'No response'
+                print(f"[TX] History error: {error}", flush=True)
+                
+        except Exception as e:
+            print(f"[TX] History exception: {e}", flush=True)
