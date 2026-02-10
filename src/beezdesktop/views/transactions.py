@@ -247,14 +247,70 @@ class TransactionsView:
                     recipient = tx.get('recipient', '') or ''
                     amount = tx.get('amount', '0') or '0'
                     block_height = tx.get('block_height', '--') or '--'
+                    tx_direction = tx.get('direction', '')
                     
-                    # Determine if sent or received
-                    if sender == my_address:
+                    # Handle ownership transaction display
+                    if tx_type in ('ownership_request', 'ownership_accept', 'ownership_reject', 'ownership_cancel'):
+                        current_owner = tx.get('current_owner', '') or sender or ''
+                        new_owner = tx.get('new_owner', '') or recipient or ''
+                        asking_price = tx.get('asking_price', amount) or '0'
+                        
+                        if tx_type == 'ownership_request':
+                            if tx_direction == 'sent':
+                                display_type = "↑ Transfer Offer"
+                                direction = f"To: {new_owner[:12]}..." if new_owner else "To: --"
+                            else:
+                                display_type = "↓ Transfer Offer"
+                                direction = f"From: {current_owner[:12]}..." if current_owner else "From: --"
+                            amount = str(asking_price)
+                        elif tx_type == 'ownership_accept':
+                            if tx_direction == 'received':
+                                display_type = "↓ Asset Sale"
+                                direction = f"From: {new_owner[:12]}..." if new_owner else "From: buyer"
+                            else:
+                                display_type = "↑ Asset Purchase"
+                                direction = f"To: {current_owner[:12]}..." if current_owner else "To: seller"
+                            amount = str(asking_price)
+                        elif tx_type == 'ownership_reject':
+                            display_type = "✗ Transfer Rejected"
+                            direction = f"File transfer"
+                            amount = "0 BZT"
+                        elif tx_type == 'ownership_cancel':
+                            display_type = "✗ Transfer Cancelled"
+                            direction = f"File transfer"
+                            amount = "0 BZT"
+                    elif tx_type == 'penalty':
+                        dam_addr = tx.get('dam_address', '') or ''
+                        target_addr = tx.get('target_node_address', '') or ''
+                        display_type = "⚠ Penalty"
+                        direction = f"DAM: {dam_addr[:12]}... → {target_addr[:12]}..."
+                        amount = f"Score: {tx.get('penalty_score', '?')}"
+                    elif tx_type == 'escrow_release':
+                        escrow_file = tx.get('from_escrow', '') or ''
+                        recipient = tx.get('recipient', '') or ''
+                        display_type = "↓ Storage Reward"
+                        direction = f"Escrow: {escrow_file[:12]}..."
+                    elif tx_type == 'dam_verification_reward':
+                        escrow_file = tx.get('from_escrow', '') or ''
+                        display_type = "↓ DAM Reward"
+                        direction = f"Escrow: {escrow_file[:12]}..."
+                    elif tx_type == 'update_chunk_location':
+                        old_node = tx.get('old_node_id', '') or ''
+                        new_node = tx.get('new_node_id', '') or ''
+                        display_type = "↔ Chunk Migration"
+                        direction = f"{old_node[:8]}... → {new_node[:8]}..."
+                        amount = f"{len(tx.get('migrated_chunks', []))} chunks"
+                    elif tx_type == 'datrone_reward':
+                        display_type = "↓ Datrone Reward"
                         direction = f"To: {recipient[:12]}..." if recipient else "To: --"
-                        display_type = f"↑ {tx_type}"
                     else:
-                        direction = f"From: {sender[:12]}..." if sender else "From: --"
-                        display_type = f"↓ {tx_type}"
+                        # Standard transaction display
+                        if sender == my_address:
+                            direction = f"To: {recipient[:12]}..." if recipient else "To: --"
+                            display_type = f"↑ {tx_type}"
+                        else:
+                            direction = f"From: {sender[:12]}..." if sender else "From: --"
+                            display_type = f"↓ {tx_type}"
                     
                     self.history_table.data.append([
                         display_type,

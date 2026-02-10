@@ -376,12 +376,61 @@ class BlockchainView:
             for i, tx in enumerate(txs[:10]):  # Show first 10
                 tx_type = tx.get("type", "transfer")
                 tx_hash = tx.get("tx_hash", "")
-                amount = tx.get("amount", "0")
+                # Use asking_price for ownership txs, amount for others
+                if tx_type in ("ownership_request", "ownership_accept"):
+                    amount = tx.get("asking_price", "0")
+                else:
+                    amount = tx.get("amount", "0")
                 
                 # Get addresses based on type
                 if tx_type == "upload":
                     from_addr = tx.get("uploader", "N/A")
                     to_addr = "Storage"
+                elif tx_type == "ownership_request":
+                    from_addr = tx.get("current_owner", "N/A")
+                    to_addr = tx.get("new_owner", "N/A")
+                elif tx_type == "ownership_accept":
+                    from_addr = tx.get("new_owner", "N/A")
+                    to_addr = "(accepted)"
+                elif tx_type == "ownership_reject":
+                    from_addr = tx.get("new_owner", "N/A")
+                    to_addr = "(rejected)"
+                elif tx_type == "ownership_cancel":
+                    from_addr = tx.get("current_owner", "N/A")
+                    to_addr = "(cancelled)"
+                elif tx_type == "update_digital_asset_price":
+                    from_addr = tx.get("owner_address", "N/A")
+                    to_addr = f"Price → {tx.get('new_price', '?')}"
+                    amount = tx.get("new_price", "0")
+                elif tx_type == "update_digital_asset_visibility":
+                    from_addr = tx.get("owner_address", "N/A")
+                    to_addr = f"→ {tx.get('visibility', '?').upper()}"
+                    amount = "0"
+                elif tx_type == "update_asset_tags":
+                    from_addr = tx.get("owner_address", "N/A")
+                    to_addr = "Tags update"
+                    amount = "0"
+                elif tx_type == "penalty":
+                    from_addr = tx.get("dam_address", "N/A")
+                    to_addr = tx.get("target_node_address", "N/A")
+                    amount = f"Score: {tx.get('penalty_score', '?')}"
+                elif tx_type == "escrow_release":
+                    from_addr = f"Escrow ({self._truncate_hash(tx.get('from_escrow', ''), 8)})"
+                    to_addr = tx.get("recipient", "N/A")
+                elif tx_type == "dam_verification_reward":
+                    from_addr = f"Escrow ({self._truncate_hash(tx.get('from_escrow', ''), 8)})"
+                    to_addr = tx.get("recipient", "N/A")
+                elif tx_type == "escrow_unlock":
+                    from_addr = tx.get("dam_address", "N/A")
+                    to_addr = f"File ({self._truncate_hash(tx.get('file_id', ''), 8)})"
+                    amount = "Unlock"
+                elif tx_type == "datrone_reward":
+                    from_addr = "Datrone"
+                    to_addr = tx.get("recipient", "N/A")
+                elif tx_type == "update_chunk_location":
+                    from_addr = tx.get("old_node_id", "N/A")
+                    to_addr = tx.get("new_node_id", "N/A")
+                    amount = f"{len(tx.get('migrated_chunks', []))} chunks"
                 else:
                     from_addr = tx.get("sender", "N/A")
                     to_addr = tx.get("recipient", "N/A")
@@ -423,7 +472,10 @@ class BlockchainView:
         for i, tx in enumerate(txs):
             tx_type = tx.get("type", "transfer")
             tx_hash = tx.get("tx_hash", "unknown")
-            amount = tx.get("amount", "0")
+            if tx_type in ("ownership_request", "ownership_accept"):
+                amount = tx.get("asking_price", "0")
+            else:
+                amount = tx.get("amount", "0")
             tx_options.append(f"{i+1}. [{tx_type}] {self._truncate_hash(tx_hash, 12)} - {amount}")
         
         # Ask which transaction to view
@@ -448,13 +500,35 @@ class BlockchainView:
         """Format transaction details for display."""
         tx_type = tx.get("type", "transfer")
         tx_hash = tx.get("tx_hash", "N/A")
-        amount = tx.get("amount", "0")
+        if tx_type in ("ownership_request", "ownership_accept"):
+            amount = tx.get("asking_price", "0")
+        elif tx_type == "update_digital_asset_price":
+            amount = tx.get("new_price", "0")
+        elif tx_type in ("update_digital_asset_visibility", "update_asset_tags"):
+            amount = "--"
+        elif tx_type == "penalty":
+            amount = f"Score: {tx.get('penalty_score', '?')}"
+        elif tx_type == "update_chunk_location":
+            amount = f"{len(tx.get('migrated_chunks', []))} chunks"
+        else:
+            amount = tx.get("amount", "0")
         timestamp = self._format_timestamp(tx.get("timestamp", "N/A"))
+        
+        # Friendly display name for tx type
+        type_labels = {
+            "escrow_release": "STORAGE REWARD",
+            "dam_verification_reward": "DAM REWARD",
+            "penalty": "PENALTY",
+            "update_chunk_location": "CHUNK MIGRATION",
+            "datrone_reward": "DATRONE REWARD",
+            "escrow_unlock": "ESCROW UNLOCK",
+        }
+        type_display = type_labels.get(tx_type, tx_type.upper().replace("UPDATE_DIGITAL_ASSET_", "").replace("_", " "))
         
         details = (
             f"━━━ Transaction Details ━━━\n\n"
             f"Hash: {tx_hash}\n"
-            f"Type: {tx_type.upper()}\n"
+            f"Type: {type_display}\n"
             f"Amount: {amount}\n"
             f"Block: #{block_height}\n"
             f"Timestamp: {timestamp}\n\n"
@@ -484,12 +558,95 @@ class BlockchainView:
                 f"Duration: {tx.get('duration_blocks', 'N/A')} blocks\n"
                 f"Reason: {tx.get('reason', 'N/A')}\n"
             )
-        elif tx_type in ("penalty", "escrow", "escrow_release"):
+        elif tx_type == "penalty":
             details += (
-                f"━━━ {tx_type.replace('_', ' ').title()} Details ━━━\n\n"
-                f"Node ID: {self._truncate_hash(tx.get('target_node_id', tx.get('storage_node_id', 'N/A')), 16)}\n"
-                f"Node Address: {self._truncate_hash(tx.get('target_node_address', tx.get('storage_node_address', 'N/A')), 16)}\n"
-                f"DAM: {self._truncate_hash(tx.get('dam_address', 'N/A'), 16)}\n"
+                f"━━━ Penalty Details ━━━\n\n"
+                f"DAM Node: {self._truncate_hash(tx.get('dam_address', 'N/A'), 20)}\n"
+                f"Target Node: {self._truncate_hash(tx.get('target_node_id', 'N/A'), 20)}\n"
+                f"Target Address: {self._truncate_hash(tx.get('target_node_address', 'N/A'), 20)}\n"
+                f"Penalty Score: {tx.get('penalty_score', 'N/A')}\n"
+                f"Type: {tx.get('verification_type', 'N/A')}\n"
+                f"Reason: {tx.get('reason', 'N/A')}\n"
+                f"Evidence: {self._truncate_hash(tx.get('evidence_hash', 'N/A'), 20)}\n"
+            )
+        elif tx_type == "escrow_release":
+            details += (
+                f"━━━ Escrow Release Details ━━━\n\n"
+                f"Escrow (File): {self._truncate_hash(tx.get('from_escrow', 'N/A'), 20)}\n"
+                f"Recipient: {tx.get('recipient', 'N/A')}\n"
+                f"Amount: {tx.get('amount', 'N/A')}\n"
+                f"Release Block: {tx.get('release_block', 'N/A')}\n"
+            )
+        elif tx_type == "dam_verification_reward":
+            details += (
+                f"━━━ DAM Verification Reward ━━━\n\n"
+                f"Escrow (File): {self._truncate_hash(tx.get('from_escrow', 'N/A'), 20)}\n"
+                f"Recipient: {tx.get('recipient', 'N/A')}\n"
+                f"Amount: {tx.get('amount', 'N/A')}\n"
+                f"Verified Nodes: {tx.get('verified_count', 'N/A')}\n"
+                f"Release Block: {tx.get('release_block', 'N/A')}\n"
+            )
+        elif tx_type == "escrow_unlock":
+            details += (
+                f"━━━ Escrow Unlock Details ━━━\n\n"
+                f"DAM Guardian: {tx.get('dam_address', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Release Block: {tx.get('release_block', 'N/A')}\n"
+                f"Beneficiaries: {len(tx.get('verified_beneficiaries', []))}\n"
+            )
+        elif tx_type == "ownership_request":
+            details += (
+                f"━━━ Ownership Request ━━━\n\n"
+                f"From (current owner): {tx.get('current_owner', 'N/A')}\n"
+                f"To (new owner): {tx.get('new_owner', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Asking Price: {tx.get('asking_price', '0')}\n"
+                f"Message: {tx.get('ownership_message', '')}\n"
+            )
+        elif tx_type == "ownership_accept":
+            details += (
+                f"━━━ Ownership Accept ━━━\n\n"
+                f"Accepted by (new owner): {tx.get('new_owner', 'N/A')}\n"
+                f"Request ID: {self._truncate_hash(tx.get('request_id', 'N/A'), 20)}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Price Paid: {tx.get('asking_price', '0')}\n"
+            )
+        elif tx_type == "ownership_reject":
+            details += (
+                f"━━━ Ownership Reject ━━━\n\n"
+                f"Rejected by: {tx.get('new_owner', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Reason: {tx.get('ownership_message', 'No reason given')}\n"
+            )
+        elif tx_type == "ownership_cancel":
+            details += (
+                f"━━━ Ownership Cancel ━━━\n\n"
+                f"Cancelled by: {tx.get('current_owner', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+            )
+        elif tx_type == "update_digital_asset_price":
+            details += (
+                f"━━━ Price Update ━━━\n\n"
+                f"Owner: {tx.get('owner_address', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"New Price: {tx.get('new_price', 'N/A')}\n"
+                f"Old Price: {tx.get('old_price', 'N/A')}\n"
+                f"Reason: {tx.get('update_reason', 'N/A')}\n"
+            )
+        elif tx_type == "update_digital_asset_visibility":
+            details += (
+                f"━━━ Visibility Update ━━━\n\n"
+                f"Owner: {tx.get('owner_address', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Visibility: {tx.get('visibility', 'N/A').upper()}\n"
+                f"Reason: {tx.get('update_reason', 'N/A')}\n"
+            )
+        elif tx_type == "update_asset_tags":
+            details += (
+                f"━━━ Tags Update ━━━\n\n"
+                f"Owner: {tx.get('owner_address', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Tags: {', '.join(tx.get('tags', []))}\n"
             )
         else:
             # Normal transfer
@@ -575,11 +732,29 @@ class BlockchainView:
             for tx in txs[:5]:
                 tx_type = tx.get('type', 'transfer')
                 tx_hash = tx.get('tx_hash', 'unknown')
-                amount = tx.get('amount', '0')
+                
+                # Format amount/info based on tx type
+                if tx_type == "penalty":
+                    amount_info = f"Score: {tx.get('penalty_score', '?')}"
+                elif tx_type in ("escrow_release", "dam_verification_reward"):
+                    amount_info = f"{tx.get('amount', '?')} BZT"
+                elif tx_type == "update_chunk_location":
+                    amount_info = f"{len(tx.get('migrated_chunks', []))} chunks"
+                else:
+                    amount_info = str(tx.get('amount', '0'))
+                
+                # Friendly type labels
+                type_labels = {
+                    "escrow_release": "REWARD",
+                    "dam_verification_reward": "DAM-RWD",
+                    "penalty": "PENALTY",
+                    "update_chunk_location": "MIGRATE",
+                }
+                type_display = type_labels.get(tx_type, tx_type.upper())
                 
                 tx_row = toga.Box(style=Pack(direction=ROW, padding=3))
                 tx_row.add(toga.Label(
-                    f"[{tx_type}] {self._truncate_hash(tx_hash, 12)} - {amount}",
+                    f"[{type_display}] {self._truncate_hash(tx_hash, 12)} - {amount_info}",
                     style=Pack(flex=1, font_size=11)
                 ))
                 

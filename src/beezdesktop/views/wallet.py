@@ -13,6 +13,20 @@ import os
 from pathlib import Path
 
 
+def safe_async_handler(handler_func, name="unnamed"):
+    """Create a safe button handler that wraps an async function."""
+    def wrapper(widget):
+        async def inner():
+            try:
+                await handler_func(widget)
+            except Exception as e:
+                print(f"[WALLET] Handler '{name}' error: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+        asyncio.create_task(inner())
+    return wrapper
+
+
 class WalletView:
     """Wallet management view."""
     
@@ -71,14 +85,14 @@ class WalletView:
             
             load_btn = toga.Button(
                 "Load Saved Wallet",
-                on_press=self._on_load_saved_wallet,
+                on_press=safe_async_handler(self._on_load_saved_wallet, "load_saved"),
                 style=Pack(width=200, padding=(0, 0, 10, 0))
             )
             saved_section.add(load_btn)
             
             delete_btn = toga.Button(
                 "Delete Saved Wallet",
-                on_press=self._on_delete_saved_wallet,
+                on_press=safe_async_handler(self._on_delete_saved_wallet, "delete_saved"),
                 style=Pack(width=200)
             )
             saved_section.add(delete_btn)
@@ -95,7 +109,7 @@ class WalletView:
         
         create_btn = toga.Button(
             "Generate New Wallet",
-            on_press=self._on_create_wallet,
+            on_press=safe_async_handler(self._on_create_wallet, "create_wallet"),
             style=Pack(width=200, padding=(0, 0, 20, 0))
         )
         box.add(create_btn)
@@ -109,7 +123,7 @@ class WalletView:
         
         import_btn = toga.Button(
             "Import Wallet File",
-            on_press=self._on_import_wallet_file,
+            on_press=safe_async_handler(self._on_import_wallet_file, "import_wallet"),
             style=Pack(width=200, padding=(0, 0, 20, 0))
         )
         box.add(import_btn)
@@ -135,7 +149,7 @@ class WalletView:
         
         connect_btn = toga.Button(
             "Connect Wallet",
-            on_press=self._on_connect_wallet,
+            on_press=safe_async_handler(self._on_connect_wallet, "connect_wallet"),
             style=Pack(width=200)
         )
         box.add(connect_btn)
@@ -193,7 +207,7 @@ class WalletView:
         
         export_btn = toga.Button(
             "Export Wallet",
-            on_press=self._on_export_wallet,
+            on_press=safe_async_handler(self._on_export_wallet, "export_wallet"),
             style=Pack(width=140, padding=(0, 5, 0, 0))
         )
         actions_row.add(export_btn)
@@ -215,7 +229,7 @@ class WalletView:
             if not is_saved:
                 save_btn = toga.Button(
                     "Save for Auto-load",
-                    on_press=self._on_save_wallet,
+                    on_press=safe_async_handler(self._on_save_wallet, "save_wallet"),
                     style=Pack(width=140)
                 )
                 save_row.add(save_btn)
@@ -225,7 +239,7 @@ class WalletView:
         # Disconnect button
         disconnect_btn = toga.Button(
             "Disconnect Wallet",
-            on_press=self._on_disconnect_wallet,
+            on_press=safe_async_handler(self._on_disconnect_wallet, "disconnect_wallet"),
             style=Pack(width=150, padding=(20, 0, 0, 0))
         )
         box.add(disconnect_btn)
@@ -318,7 +332,9 @@ class WalletView:
     
     async def _on_export_wallet(self, widget):
         """Handle export wallet button."""
+        print("[WALLET] Export Wallet button pressed", flush=True)
         if not self.app.client:
+            print("[WALLET] No client available", flush=True)
             return
         
         wallet = self.app.client.get_current_wallet()
@@ -481,17 +497,28 @@ class WalletView:
                 toga.ErrorDialog("Error", f"Failed to connect wallet: {e}")
             )
     
-    def _on_disconnect_wallet(self, widget):
+    async def _on_disconnect_wallet(self, widget):
         """Handle disconnect wallet button."""
         if not self.app.client:
             return
         
-        self.app.client.disconnect_wallet()
-        self.app.update_wallet_status()
-        self.app._show_wallet()
+        confirm = await self.app.main_window.dialog(
+            toga.QuestionDialog(
+                "Disconnect Wallet",
+                "Are you sure you want to disconnect your wallet?"
+            )
+        )
+        
+        if confirm:
+            self.app.client.disconnect_wallet()
+            print("[WALLET] Wallet disconnected", flush=True)
+            self.app.update_wallet_status()
+            # Force rebuild the wallet view
+            self.app._show_wallet()
     
     def _on_refresh_balance(self, widget):
         """Handle refresh balance button."""
+        print("[WALLET] Refresh Balance button pressed", flush=True)
         asyncio.create_task(self._refresh_balance_async())
     
     async def _refresh_balance_async(self):
