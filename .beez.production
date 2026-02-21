@@ -1,0 +1,25 @@
+# BeezDesktop Production Configuration
+# Points to the live Beez network directory nodes
+
+[network]
+type = "default"
+directory_nodes = ["167.235.25.169:5557", "157.180.40.116:5557", "128.140.114.51:5557"]
+
+[wallet]
+address = ""
+mnemonic = ""
+keystore_path = ""
+
+[zmq]
+tx_port = 5555
+consensus_port = 5557
+timeout_ms = 5000
+reconnect_interval_ms = 1000
+
+[logging]
+level = "INFO"
+file_path = ""
+
+[security]
+enable_tls = false
+rate_limit = 1000
