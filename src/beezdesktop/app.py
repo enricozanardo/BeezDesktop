@@ -69,7 +69,10 @@ class BeezDesktopApp(toga.App):
         
         self.main_window.content = main_box
         self.main_window.show()
-        
+
+        # Ensure config is loaded (creates ~/.beez from bundled defaults if needed)
+        self._init_config()
+
         # Start background services
         self._start_background_services()
         
@@ -109,6 +112,7 @@ class BeezDesktopApp(toga.App):
             ("Transactions", "transactions", self._show_transactions),
             ("Blockchain", "blockchain", self._show_blockchain),
             ("Network", "network", self._show_network),
+            ("Settings", "settings", self._show_settings),
         ]
         
         for label, view_id, handler in nav_items:
@@ -151,6 +155,18 @@ class BeezDesktopApp(toga.App):
         for child in list(self.content_area.children):
             self.content_area.remove(child)
     
+    def _init_config(self):
+        """Load .beez config, creating from bundled defaults on first launch."""
+        try:
+            from shared.beez_config import get_config
+            config = get_config()
+            nodes = config.network.directory_nodes
+            print(f"[APP] Config loaded: {len(nodes)} directory nodes", flush=True)
+            for n in nodes:
+                print(f"[APP]   -> {n}", flush=True)
+        except Exception as e:
+            print(f"[APP] Config init error: {e}", flush=True)
+
     def _start_background_services(self):
         """Start background services like consensus listener."""
         if self.state:
@@ -246,7 +262,16 @@ class BeezDesktopApp(toga.App):
         from beezdesktop.views.network import NetworkView
         view = NetworkView(app=self)
         self.content_area.add(view.build())
-    
+
+    def _show_settings(self, widget=None):
+        """Show the settings view."""
+        self._clear_content()
+        self.current_view = "settings"
+
+        from beezdesktop.views.settings import SettingsView
+        view = SettingsView(app=self)
+        self.content_area.add(view.build())
+
     # === Wallet Status ===
     
     def update_wallet_status(self):
