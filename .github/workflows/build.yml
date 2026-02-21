@@ -13,7 +13,7 @@ env:
 
 jobs:
   build-linux:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,16 +28,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libgirepository1.0-dev \
+            libgirepository-2.0-dev \
             libcairo2-dev \
             libpango1.0-dev \
             libwebkit2gtk-4.1-dev \
             gir1.2-webkit2-4.1
 
-      - name: Install Python dependencies
-        run: |
-          pip install briefcase
-          pip install -r requirements.txt
+      - name: Install Briefcase
+        run: pip install briefcase
 
       - name: Build Linux app
         run: |
@@ -64,10 +62,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Python dependencies
-        run: |
-          pip install briefcase
-          pip install -r requirements.txt
+      - name: Install Briefcase
+        run: pip install briefcase
 
       - name: Build macOS app
         run: |
@@ -94,10 +90,8 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Install Python dependencies
-        run: |
-          pip install briefcase
-          pip install -r requirements.txt
+      - name: Install Briefcase
+        run: pip install briefcase
 
       - name: Build Windows app
         run: |
