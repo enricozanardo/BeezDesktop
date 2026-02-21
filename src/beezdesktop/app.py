@@ -104,6 +104,8 @@ class BeezDesktopApp(toga.App):
             ("Dashboard", "dashboard", self._show_dashboard),
             ("Wallet", "wallet", self._show_wallet),
             ("Files", "files", self._show_files),
+            ("Smart", "smart", self._show_smart),
+            ("Knowledge", "knowledge", self._show_knowledge),
             ("Transactions", "transactions", self._show_transactions),
             ("Blockchain", "blockchain", self._show_blockchain),
             ("Network", "network", self._show_network),
@@ -135,7 +137,17 @@ class BeezDesktopApp(toga.App):
         return sidebar
     
     def _clear_content(self):
-        """Clear the content area."""
+        """Clear the content area and cancel any active view refresh tasks."""
+        # Cancel refresh tasks from previous view (e.g. blockchain auto-refresh)
+        if hasattr(self, '_active_view') and self._active_view is not None:
+            view = self._active_view
+            if hasattr(view, '_auto_refresh_enabled'):
+                view._auto_refresh_enabled = False
+            if hasattr(view, '_refresh_task') and view._refresh_task is not None:
+                view._refresh_task.cancel()
+                view._refresh_task = None
+        self._active_view = None
+
         for child in list(self.content_area.children):
             self.content_area.remove(child)
     
@@ -219,6 +231,25 @@ class BeezDesktopApp(toga.App):
         view = FilesView(app=self)
         self.content_area.add(view.build())
     
+    def _show_smart(self, widget=None):
+        """Show the smart RAG view."""
+        self._clear_content()
+        self.current_view = "smart"
+        
+        from beezdesktop.views.smart import SmartView
+        view = SmartView(app=self)
+        self.content_area.add(view.build())
+    
+    def _show_knowledge(self, widget=None):
+        """Show the knowledge marketplace view."""
+        self._clear_content()
+        self.current_view = "knowledge"
+
+        from beezdesktop.views.knowledge import KnowledgeView
+        view = KnowledgeView(app=self)
+        self._active_view = view
+        self.content_area.add(view.build())
+
     def _show_transactions(self, widget=None):
         """Show the transactions view."""
         self._clear_content()
@@ -226,7 +257,9 @@ class BeezDesktopApp(toga.App):
         
         from beezdesktop.views.transactions import TransactionsView
         view = TransactionsView(app=self)
+        self._active_view = view
         self.content_area.add(view.build())
+        print("[APP] Transactions view loaded", flush=True)
     
     def _show_blockchain(self, widget=None):
         """Show the blockchain view."""
@@ -235,6 +268,7 @@ class BeezDesktopApp(toga.App):
         
         from beezdesktop.views.blockchain import BlockchainView
         view = BlockchainView(app=self)
+        self._active_view = view
         self.content_area.add(view.build())
     
     def _show_network(self, widget=None):

@@ -67,15 +67,20 @@ class BlockchainView:
     
     async def _auto_refresh_loop(self):
         """Auto-refresh blockchain data periodically."""
-        while self._auto_refresh_enabled:
-            await asyncio.sleep(self._auto_refresh_interval)
-            try:
-                await self._load_blockchain_info()
-                # Only refresh blocks if on first page
-                if self.current_offset == 0:
-                    await self._load_blocks()
-            except Exception as e:
-                print(f"[BLOCKCHAIN] Auto-refresh error: {e}", flush=True)
+        try:
+            while self._auto_refresh_enabled:
+                await asyncio.sleep(self._auto_refresh_interval)
+                if not self._auto_refresh_enabled:
+                    break
+                try:
+                    await self._load_blockchain_info()
+                    # Only refresh blocks if on first page
+                    if self.current_offset == 0:
+                        await self._load_blocks()
+                except Exception as e:
+                    print(f"[BLOCKCHAIN] Auto-refresh error: {e}", flush=True)
+        except asyncio.CancelledError:
+            pass  # Task cancelled on view switch -- expected
     
     def _build_info_section(self) -> toga.Box:
         """Build the blockchain info section."""
@@ -379,6 +384,16 @@ class BlockchainView:
                 # Use asking_price for ownership txs, amount for others
                 if tx_type in ("ownership_request", "ownership_accept"):
                     amount = tx.get("asking_price", "0")
+                elif tx_type == "smart_index":
+                    amount = tx.get("total_cost", "0")
+                elif tx_type == "smart_query":
+                    amount = tx.get("cost", "0")
+                elif tx_type == "knowledge_query":
+                    amount = tx.get("cost", "0")
+                elif tx_type == "knowledge_purchase":
+                    amount = tx.get("purchase_price", "0")
+                elif tx_type == "knowledge_publish":
+                    amount = "0"
                 else:
                     amount = tx.get("amount", "0")
                 
@@ -431,6 +446,27 @@ class BlockchainView:
                     from_addr = tx.get("old_node_id", "N/A")
                     to_addr = tx.get("new_node_id", "N/A")
                     amount = f"{len(tx.get('migrated_chunks', []))} chunks"
+                elif tx_type == "smart_index":
+                    from_addr = tx.get("wallet_address", "N/A")
+                    to_addr = tx.get("smart_node_wallet", "N/A")
+                    chunks = tx.get("num_chunks_indexed", 0)
+                    amount = f"{tx.get('total_cost', 0)} BZT ({chunks} chunks)"
+                elif tx_type == "smart_query":
+                    from_addr = tx.get("wallet_address", "N/A")
+                    to_addr = tx.get("smart_node_wallet", "N/A")
+                    amount = f"{tx.get('cost', 0)} BZT"
+                elif tx_type == "knowledge_publish":
+                    from_addr = tx.get("seller_address", "N/A")
+                    to_addr = f"Listing ({self._truncate_hash(tx.get('listing_id', ''), 8)})"
+                    amount = "0 BZT"
+                elif tx_type == "knowledge_query":
+                    from_addr = tx.get("buyer_address", "N/A")
+                    to_addr = tx.get("seller_address", "N/A")
+                    amount = f"{tx.get('cost', 0)} BZT"
+                elif tx_type == "knowledge_purchase":
+                    from_addr = tx.get("buyer_address", "N/A")
+                    to_addr = tx.get("seller_address", "N/A")
+                    amount = f"{tx.get('purchase_price', 0)} BZT"
                 else:
                     from_addr = tx.get("sender", "N/A")
                     to_addr = tx.get("recipient", "N/A")
@@ -474,6 +510,14 @@ class BlockchainView:
             tx_hash = tx.get("tx_hash", "unknown")
             if tx_type in ("ownership_request", "ownership_accept"):
                 amount = tx.get("asking_price", "0")
+            elif tx_type == "smart_index":
+                amount = tx.get("total_cost", "0")
+            elif tx_type in ("smart_query", "knowledge_query"):
+                amount = tx.get("cost", "0")
+            elif tx_type == "knowledge_purchase":
+                amount = tx.get("purchase_price", "0")
+            elif tx_type == "knowledge_publish":
+                amount = "0"
             else:
                 amount = tx.get("amount", "0")
             tx_options.append(f"{i+1}. [{tx_type}] {self._truncate_hash(tx_hash, 12)} - {amount}")
@@ -510,6 +554,16 @@ class BlockchainView:
             amount = f"Score: {tx.get('penalty_score', '?')}"
         elif tx_type == "update_chunk_location":
             amount = f"{len(tx.get('migrated_chunks', []))} chunks"
+        elif tx_type == "smart_index":
+            amount = f"{tx.get('total_cost', 0)} BZT"
+        elif tx_type == "smart_query":
+            amount = f"{tx.get('cost', 0)} BZT"
+        elif tx_type == "knowledge_query":
+            amount = f"{tx.get('cost', 0)} BZT"
+        elif tx_type == "knowledge_purchase":
+            amount = f"{tx.get('purchase_price', 0)} BZT"
+        elif tx_type == "knowledge_publish":
+            amount = "0 BZT"
         else:
             amount = tx.get("amount", "0")
         timestamp = self._format_timestamp(tx.get("timestamp", "N/A"))
@@ -522,6 +576,9 @@ class BlockchainView:
             "update_chunk_location": "CHUNK MIGRATION",
             "datrone_reward": "DATRONE REWARD",
             "escrow_unlock": "ESCROW UNLOCK",
+            "knowledge_publish": "KNOWLEDGE PUBLISH",
+            "knowledge_query": "KNOWLEDGE QUERY",
+            "knowledge_purchase": "KNOWLEDGE PURCHASE",
         }
         type_display = type_labels.get(tx_type, tx_type.upper().replace("UPDATE_DIGITAL_ASSET_", "").replace("_", " "))
         
@@ -647,6 +704,62 @@ class BlockchainView:
                 f"Owner: {tx.get('owner_address', 'N/A')}\n"
                 f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
                 f"Tags: {', '.join(tx.get('tags', []))}\n"
+            )
+        elif tx_type == "smart_index":
+            details += (
+                f"━━━ Smart Index Details ━━━\n\n"
+                f"Payer: {tx.get('wallet_address', 'N/A')}\n"
+                f"Smart Node: {tx.get('smart_node_id', 'N/A')}\n"
+                f"Smart Wallet: {tx.get('smart_node_wallet', 'N/A')}\n"
+                f"File ID: {self._truncate_hash(tx.get('file_id', 'N/A'), 20)}\n"
+                f"Chunks Indexed: {tx.get('num_chunks_indexed', 'N/A')}\n"
+                f"Cost: {tx.get('total_cost', 'N/A')} BZT\n"
+            )
+        elif tx_type == "smart_query":
+            file_ids = tx.get('file_ids', []) or []
+            details += (
+                f"━━━ Smart Query Details ━━━\n\n"
+                f"Payer: {tx.get('wallet_address', 'N/A')}\n"
+                f"Smart Node: {tx.get('smart_node_id', 'N/A')}\n"
+                f"Smart Wallet: {tx.get('smart_node_wallet', 'N/A')}\n"
+                f"Query Hash: {self._truncate_hash(tx.get('query_hash', 'N/A'), 20)}\n"
+                f"Answer Hash: {self._truncate_hash(tx.get('answer_hash', 'N/A'), 20)}\n"
+                f"Files Queried: {len(file_ids)}\n"
+                f"Cost: {tx.get('cost', 'N/A')} BZT\n"
+            )
+        elif tx_type == "knowledge_publish":
+            details += (
+                f"━━━ Knowledge Publish Details ━━━\n\n"
+                f"Seller: {tx.get('seller_address', 'N/A')}\n"
+                f"Listing ID: {tx.get('listing_id', 'N/A')}\n"
+                f"Smart Node: {tx.get('smart_node_id', 'N/A')}\n"
+                f"Title Hash: {self._truncate_hash(tx.get('title_hash', 'N/A'), 20)}\n"
+                f"Files: {tx.get('file_count', 'N/A')}\n"
+                f"Chunks: {tx.get('chunk_count', 'N/A')}\n"
+                f"Price/Query: {tx.get('price_per_query', 'N/A')} BZT\n"
+                f"Purchase Price: {tx.get('purchase_price', 0)} BZT\n"
+            )
+        elif tx_type == "knowledge_query":
+            details += (
+                f"━━━ Knowledge Query Details ━━━\n\n"
+                f"Buyer: {tx.get('buyer_address', 'N/A')}\n"
+                f"Seller: {tx.get('seller_address', 'N/A')}\n"
+                f"Listing ID: {tx.get('listing_id', 'N/A')}\n"
+                f"Smart Node: {tx.get('smart_node_id', 'N/A')}\n"
+                f"Smart Wallet: {tx.get('smart_node_wallet', 'N/A')}\n"
+                f"Query Hash: {self._truncate_hash(tx.get('query_hash', 'N/A'), 20)}\n"
+                f"Answer Hash: {self._truncate_hash(tx.get('answer_hash', 'N/A'), 20)}\n"
+                f"Cost: {tx.get('cost', 'N/A')} BZT\n"
+            )
+        elif tx_type == "knowledge_purchase":
+            file_ids = tx.get('file_ids', []) or []
+            details += (
+                f"━━━ Knowledge Purchase Details ━━━\n\n"
+                f"Buyer: {tx.get('buyer_address', 'N/A')}\n"
+                f"Seller: {tx.get('seller_address', 'N/A')}\n"
+                f"Listing ID: {tx.get('listing_id', 'N/A')}\n"
+                f"Purchase Price: {tx.get('purchase_price', 'N/A')} BZT\n"
+                f"Files Transferred: {len(file_ids)}\n"
             )
         else:
             # Normal transfer

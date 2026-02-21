@@ -64,7 +64,8 @@ class NetworkView:
             total_nodes = (
                 len(self.app.state.active_nodes) +
                 len(self.app.state.chain_nodes) +
-                len(self.app.state.manager_nodes)
+                len(self.app.state.manager_nodes) +
+                len(self.app.state.smart_nodes)
             )
         
         if total_nodes > 0:
@@ -96,11 +97,13 @@ class NetworkView:
         storage_count = len(self.app.state.active_nodes) if self.app.state else 0
         chain_count = len(self.app.state.chain_nodes) if self.app.state else 0
         dam_count = len(self.app.state.manager_nodes) if self.app.state else 0
+        smart_count = len(self.app.state.smart_nodes) if self.app.state else 0
         
         stats = [
             ("Storage Nodes", storage_count, "#2196f3"),
             ("Chain Nodes", chain_count, "#4caf50"),
             ("DAM Nodes", dam_count, "#ff9800"),
+            ("Smart Nodes", smart_count, "#9c27b0"),
         ]
         
         for label, count, color in stats:
@@ -148,7 +151,7 @@ class NetworkView:
         tab_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
         
         self.tab_buttons = {}
-        for node_type, label in [("storage", "Storage"), ("chain", "Chain"), ("dam", "DAM")]:
+        for node_type, label in [("storage", "Storage"), ("chain", "Chain"), ("dam", "DAM"), ("smart", "Smart")]:
             btn = toga.Button(
                 label,
                 on_press=lambda w, t=node_type: self._show_nodes(t),
@@ -183,6 +186,8 @@ class NetworkView:
             nodes = self.app.state.active_nodes
         elif node_type == "chain":
             nodes = self.app.state.chain_nodes
+        elif node_type == "smart":
+            nodes = self.app.state.smart_nodes
         else:  # dam
             nodes = self.app.state.manager_nodes
         

@@ -9,5 +9,10 @@ requests>=2.31.0
 Pillow>=10.0.0
 briefcase>=0.3.26
 
+# Smart RAG dependencies (client-side embedding & PDF support)
+fastembed>=0.7.0    # ONNX-based local embedding generation
+numpy>=1.26.0       # Embedding vector handling
+pymupdf>=1.24.0     # PDF text extraction for Smart RAG indexing
+
 # Shared module (install from parent)
 # pip install -e ../shared/

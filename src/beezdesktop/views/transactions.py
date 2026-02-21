@@ -31,7 +31,9 @@ class TransactionsView:
         container.add(header)
         
         # Check if wallet is connected
-        if not self.app.client or not self.app.client.is_wallet_connected():
+        wallet_ok = self.app.client and self.app.client.is_wallet_connected()
+        print(f"[TX] Building view (wallet_connected={wallet_ok})", flush=True)
+        if not wallet_ok:
             no_wallet = toga.Label(
                 "Please connect a wallet to send transactions.",
                 style=Pack(padding=20, color="#888888")
@@ -229,6 +231,10 @@ class TransactionsView:
                 lambda: self.app.client.get_wallet_transactions(None, 20, 0, "all")
             )
             
+            print(f"[TX] History loaded: status={status}, "
+                  f"count={len(result.get('transactions', [])) if result else 0}",
+                  flush=True)
+
             self.history_table.data.clear()
             
             if status == 200 and result:
@@ -303,6 +309,56 @@ class TransactionsView:
                     elif tx_type == 'datrone_reward':
                         display_type = "↓ Datrone Reward"
                         direction = f"To: {recipient[:12]}..." if recipient else "To: --"
+                    elif tx_type == 'smart_index':
+                        smart_wallet = tx.get('smart_node_wallet', '') or recipient
+                        payer = sender or tx.get('wallet_address', '') or ''
+                        file_id = tx.get('smart_file_id', '') or tx.get('file_id', '') or ''
+                        chunks = tx.get('num_chunks_indexed', 0)
+                        total = tx.get('total_cost', 0) or tx.get('amount_numeric', 0)
+                        display_type = "↑ Smart Index"
+                        if tx_direction == 'sent' or payer == my_address:
+                            direction = f"To: {smart_wallet[:12]}... ({chunks} chunks)"
+                        else:
+                            direction = f"From: {payer[:12]}... ({chunks} chunks)"
+                        amount = total
+                    elif tx_type == 'smart_query':
+                        smart_wallet = tx.get('smart_node_wallet', '') or recipient
+                        payer = sender or tx.get('wallet_address', '') or ''
+                        query_cost = tx.get('query_cost', 0) or tx.get('cost', 0) or tx.get('amount_numeric', 0)
+                        display_type = "↑ Smart Query"
+                        if tx_direction == 'sent' or payer == my_address:
+                            direction = f"To: {smart_wallet[:12]}..."
+                        else:
+                            direction = f"From: {payer[:12]}..."
+                        amount = query_cost
+                    elif tx_type == 'knowledge_publish':
+                        seller = tx.get('seller_address', '') or ''
+                        listing_id = tx.get('listing_id', '') or ''
+                        display_type = "↑ Knowledge Publish"
+                        direction = f"Listing: {listing_id[:12]}..."
+                        amount = "0"
+                    elif tx_type == 'knowledge_query':
+                        buyer = tx.get('buyer_address', '') or ''
+                        seller = tx.get('seller_address', '') or ''
+                        cost = tx.get('cost', 0)
+                        if tx_direction == 'sent' or buyer == my_address:
+                            display_type = "↑ Knowledge Query"
+                            direction = f"To: {seller[:12]}..."
+                        else:
+                            display_type = "↓ Knowledge Query"
+                            direction = f"From: {buyer[:12]}..."
+                        amount = cost
+                    elif tx_type == 'knowledge_purchase':
+                        buyer = tx.get('buyer_address', '') or ''
+                        seller = tx.get('seller_address', '') or ''
+                        price = tx.get('purchase_price', 0)
+                        if tx_direction == 'sent' or buyer == my_address:
+                            display_type = "↑ Knowledge Purchase"
+                            direction = f"To: {seller[:12]}..."
+                        else:
+                            display_type = "↓ Knowledge Sale"
+                            direction = f"From: {buyer[:12]}..."
+                        amount = price
                     else:
                         # Standard transaction display
                         if sender == my_address:
