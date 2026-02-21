@@ -32,16 +32,17 @@ jobs:
             libcairo2-dev \
             libpango1.0-dev \
             libwebkit2gtk-4.1-dev \
-            gir1.2-webkit2-4.1
+            gir1.2-webkit2-4.1 \
+            libfuse2
 
       - name: Install Briefcase
         run: pip install briefcase
 
-      - name: Build Linux app
+      - name: Build Linux AppImage
         run: |
-          briefcase create linux
-          briefcase build linux
-          briefcase package linux --adhoc-sign
+          briefcase create linux appimage
+          briefcase build linux appimage
+          briefcase package linux appimage --adhoc-sign
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
