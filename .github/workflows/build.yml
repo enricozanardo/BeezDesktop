@@ -1,0 +1,133 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    branches: [ez_dev, main]
+    tags: ["v*"]
+  pull_request:
+    branches: [ez_dev, main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgirepository1.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libwebkit2gtk-4.1-dev \
+            gir1.2-webkit2-4.1
+
+      - name: Install Python dependencies
+        run: |
+          pip install briefcase
+          pip install -r requirements.txt
+
+      - name: Build Linux app
+        run: |
+          briefcase create linux
+          briefcase build linux
+          briefcase package linux --adhoc-sign
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeezDesktop-linux
+          path: dist/*
+          if-no-files-found: warn
+
+  build-macos:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install briefcase
+          pip install -r requirements.txt
+
+      - name: Build macOS app
+        run: |
+          briefcase create macOS
+          briefcase build macOS
+          briefcase package macOS --adhoc-sign
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeezDesktop-macOS
+          path: dist/*
+          if-no-files-found: warn
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Python dependencies
+        run: |
+          pip install briefcase
+          pip install -r requirements.txt
+
+      - name: Build Windows app
+        run: |
+          briefcase create windows
+          briefcase build windows
+          briefcase package windows --adhoc-sign
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BeezDesktop-windows
+          path: dist/*
+          if-no-files-found: warn
+
+  release:
+    needs: [build-linux, build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: dist/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

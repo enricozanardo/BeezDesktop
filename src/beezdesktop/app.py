@@ -155,48 +155,15 @@ class BeezDesktopApp(toga.App):
         """Start background services like consensus listener."""
         if self.state:
             try:
-                import threading
-                
-                def custom_consensus_listener():
-                    import zmq
-                    import time
-                    import json
-                    
-                    print("[CONSENSUS] Starting listener...", flush=True)
-                    
-                    context = zmq.Context.instance()
-                    sub = context.socket(zmq.SUB)
-                    
-                    # Directory consensus ports (internal 5557 -> external)
-                    endpoints = [
-                        "tcp://127.0.0.1:5585",  # Directory1
-                        "tcp://127.0.0.1:5685",  # Directory2
-                        "tcp://127.0.0.1:5745",  # Directory3
-                    ]
-                    for ep in endpoints:
-                        sub.connect(ep)
-                        print(f"[CONSENSUS] Connected to {ep}", flush=True)
-                    
-                    sub.setsockopt_string(zmq.SUBSCRIBE, "consensus")
-                    print("[CONSENSUS] Waiting for network updates...", flush=True)
-                    
-                    while True:
-                        try:
-                            message = sub.recv_string(flags=zmq.NOBLOCK)
-                            _, payload = message.split(" ", 1)
-                            consensus_data = json.loads(payload)
-                            self.state.update_from_consensus(consensus_data)
-                            storage_count = len(self.state.active_nodes)
-                            chain_count = len(self.state.chain_nodes)
-                            print(f"[CONSENSUS] ✓ {storage_count} storage, {chain_count} chain nodes", flush=True)
-                        except zmq.Again:
-                            time.sleep(1)
-                        except Exception as e:
-                            print(f"[CONSENSUS] Error: {e}", flush=True)
-                            time.sleep(1)
-                
-                thread = threading.Thread(target=custom_consensus_listener, daemon=True)
-                thread.start()
+                def on_consensus(data):
+                    storage_count = len(self.state.active_nodes)
+                    chain_count = len(self.state.chain_nodes)
+                    print(f"[CONSENSUS] ✓ {storage_count} storage, {chain_count} chain nodes", flush=True)
+
+                start_consensus_listener(
+                    state=self.state,
+                    callback=on_consensus,
+                )
                 print("[APP] Consensus listener started", flush=True)
                 
             except Exception as e:

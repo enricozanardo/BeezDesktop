@@ -1,9 +1,25 @@
-# BeezDesktop configuration for local development
-# Uses localhost to connect to Docker containers
+# BeezDesktop configuration
+# Points to the live Beez test-net directory nodes
 
 [network]
-# Directory nodes - use localhost since we're outside Docker
-directory_nodes = ["localhost:5001", "localhost:5002", "localhost:5003"]
+type = "default"
+directory_nodes = ["167.235.25.169:5557", "157.180.40.116:5557", "128.140.114.51:5557"]
+
+[wallet]
+address = ""
+mnemonic = ""
+keystore_path = ""
 
 [zmq]
+tx_port = 5555
 consensus_port = 5557
+timeout_ms = 5000
+reconnect_interval_ms = 1000
+
+[logging]
+level = "INFO"
+file_path = ""
+
+[security]
+enable_tls = false
+rate_limit = 1000

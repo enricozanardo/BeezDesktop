@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 name = "beezdesktop"
 version = "0.1.0"
 description = "Beez Desktop Client"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "toga>=0.4.0",
     "cryptography>=42.0.0",
@@ -46,28 +46,16 @@ It provides wallet management, file upload/download, transaction handling,
 and blockchain exploration - all in a native GUI without requiring a web browser.
 """
 icon = "src/beezdesktop/resources/beezdesktop"
-sources = ["src/beezdesktop"]
+sources = ["src/beezdesktop", "shared"]
 requires = [
-    # GUI
     "toga>=0.4.0",
-    
-    # Shared client core (local)
-    # NOTE: In development, use: pip install -e ../shared
-    
-    # Cryptography
     "cryptography>=42.0.0",
     "ecdsa>=0.18.0",
     "mnemonic>=0.20",
     "base58>=2.1.1",
-    
-    # Network
     "pyzmq>=25.1.0",
     "requests>=2.31.0",
-    
-    # Image processing (for previews)
     "Pillow>=10.0.0",
-
-    # Smart RAG (client-side embedding & PDF support)
     "fastembed>=0.7.0",
     "numpy>=1.26.0",
     "pymupdf>=1.24.0",
