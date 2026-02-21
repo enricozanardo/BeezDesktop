@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.0 (2026-02-22)
+
+- Add in-app Settings view for .beez network configuration
+- Bundle production network config (auto-connects on first launch)
+- Cross-platform builds: Linux (.deb), macOS (.app), Windows (.msi)
+- GitHub Actions CI/CD with auto-release on version tags
+- Automated version sync from git tags
+
 ## 0.1.0 (2026-02-21)
 
 - Initial release

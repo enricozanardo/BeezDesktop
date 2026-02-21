@@ -90,17 +90,24 @@ class BeezDesktopApp(toga.App):
             )
         )
         
-        # Logo/Title
+        # Logo/Title with version
         title = toga.Label(
             "BEEZ",
             style=Pack(
-                padding=(20, 10),
+                padding=(20, 10, 2, 10),
                 font_size=24,
                 font_weight="bold",
                 color="#f0f0f0"
             )
         )
         sidebar.add(title)
+
+        from beezdesktop import __version__
+        version_label = toga.Label(
+            f"v{__version__}",
+            style=Pack(padding=(0, 10, 15, 10), font_size=10, color="#666666")
+        )
+        sidebar.add(version_label)
         
         # Navigation buttons
         nav_items = [

@@ -31,11 +31,22 @@ class SettingsView:
         """Build the settings view."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
 
-        header = toga.Label(
+        # Header with version
+        header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 5, 0), alignment="center"))
+        header_row.add(toga.Label(
             "Settings",
-            style=Pack(padding=(0, 0, 20, 0), font_size=24, font_weight="bold")
-        )
-        container.add(header)
+            style=Pack(font_size=24, font_weight="bold", flex=1)
+        ))
+        try:
+            from beezdesktop import __version__
+            version_str = __version__
+        except ImportError:
+            version_str = "dev"
+        header_row.add(toga.Label(
+            f"v{version_str}",
+            style=Pack(font_size=14, color="#888888", padding=(6, 0, 0, 0))
+        ))
+        container.add(header_row)
 
         # Config file location
         config_path = self._get_config_path()
