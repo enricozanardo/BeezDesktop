@@ -20,29 +20,25 @@ jobs:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            python3-pip python3-venv \
             libgirepository-2.0-dev \
             libcairo2-dev \
             libpango1.0-dev \
             libwebkit2gtk-4.1-dev \
-            gir1.2-webkit2-4.1 \
-            libfuse2
+            gir1.2-webkit2-4.1
 
       - name: Install Briefcase
-        run: pip install briefcase
+        run: python3 -m pip install --break-system-packages briefcase
 
-      - name: Build Linux AppImage
+      - name: Build Linux app
         run: |
-          briefcase create linux appimage
-          briefcase build linux appimage
-          briefcase package linux appimage --adhoc-sign
+          briefcase create linux
+          briefcase build linux
+          briefcase package linux --adhoc-sign
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
