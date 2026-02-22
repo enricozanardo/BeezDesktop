@@ -15,6 +15,8 @@ import asyncio
 import threading
 import hashlib
 
+from beezdesktop.theme import Colors, Font, Spacing, page_header
+
 
 def _extract_pdf_text(file_path: str) -> str:
     """Extract text content from a PDF file using PyMuPDF.
@@ -56,27 +58,13 @@ class SmartView:
         """Build the smart view."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
 
-        # Header
-        header = toga.Label(
-            "BeezSmart",
-            style=Pack(padding=(0, 0, 10, 0), font_size=24, font_weight="bold"),
-        )
-        container.add(header)
+        container.add(page_header("BeezSmart", "Query your documents using AI-powered retrieval"))
 
-        subtitle = toga.Label(
-            "Query your documents using AI-powered retrieval",
-            style=Pack(padding=(0, 0, 20, 0), font_size=12, color="#666666"),
-        )
-        container.add(subtitle)
-
-        # Check wallet connection
         if not self.app.client or not self.app.client.is_wallet_connected():
-            container.add(
-                toga.Label(
-                    "Please connect a wallet first.",
-                    style=Pack(padding=20, font_size=14, color="#cc0000"),
-                )
-            )
+            container.add(toga.Label(
+                "Please connect a wallet first.",
+                style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
+            ))
             return container
 
         # Smart node selector

@@ -10,6 +10,8 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 import asyncio
 
+from beezdesktop.theme import Colors, Font, Spacing, page_header
+
 
 class BlockchainView:
     """Blockchain explorer view with auto-refresh."""
@@ -35,13 +37,8 @@ class BlockchainView:
     def build(self) -> toga.Box:
         """Build the blockchain view."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
-        
-        # Header
-        header = toga.Label(
-            "Blockchain Explorer",
-            style=Pack(padding=(0, 0, 20, 0), font_size=24, font_weight="bold")
-        )
-        container.add(header)
+
+        container.add(page_header("Blockchain Explorer", "Browse blocks and transactions"))
         
         # Info section
         info_section = self._build_info_section()
@@ -85,14 +82,14 @@ class BlockchainView:
     def _build_info_section(self) -> toga.Box:
         """Build the blockchain info section."""
         section = toga.Box(
-            style=Pack(direction=COLUMN, padding=10, background_color="#e3f2fd")
+            style=Pack(direction=COLUMN, padding=Spacing.CARD_PADDING, background_color=Colors.SURFACE_INFO)
         )
         
-        header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
+        header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, Spacing.SM, 0)))
         
         header = toga.Label(
             "Blockchain Status",
-            style=Pack(font_size=16, font_weight="bold", flex=1)
+            style=Pack(font_size=Font.SIZE_H3, font_weight="bold", color=Colors.TEXT_PRIMARY, flex=1)
         )
         header_row.add(header)
         

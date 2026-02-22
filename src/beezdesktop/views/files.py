@@ -16,6 +16,8 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
+from beezdesktop.theme import Colors, Font, Spacing, page_header
+
 # Import selectable components for text selection support
 # Disabled temporarily to debug button issues
 SelectableLabel = None
@@ -98,51 +100,43 @@ class FilesView:
     def build(self) -> toga.Box:
         """Build the files view with tabs."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
-        
-        # Header
-        header = toga.Label(
-            "Files",
-            style=Pack(padding=(0, 0, 10, 0), font_size=24, font_weight="bold")
-        )
-        container.add(header)
-        
-        # Check if wallet is connected
+
+        container.add(page_header("Files", "Upload, manage and browse digital assets"))
+
         if not self.app.client or not self.app.client.is_wallet_connected():
-            no_wallet = toga.Label(
+            container.add(toga.Label(
                 "Please connect a wallet to manage files.",
-                style=Pack(padding=20, color="#888888")
-            )
-            container.add(no_wallet)
+                style=Pack(padding=Spacing.XL, color=Colors.TEXT_MUTED, font_size=Font.SIZE_BODY),
+            ))
             return container
-        
-        # Create tab buttons
-        tab_buttons = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
-        
+
+        tab_buttons = toga.Box(style=Pack(direction=ROW, padding=(0, 0, Spacing.MD, 0)))
+
         self._upload_tab_btn = toga.Button(
-            "Upload",
+            "\u25B2  Upload",
             on_press=self._show_upload_tab,
-            style=Pack(width=100, padding=(0, 5, 0, 0), background_color="#4CAF50")
+            style=Pack(width=120, padding=(Spacing.SM, Spacing.XS), background_color=Colors.PRIMARY, color=Colors.TEXT_ON_PRIMARY, font_size=Font.SIZE_BODY),
         )
         tab_buttons.add(self._upload_tab_btn)
-        
+
         self._files_tab_btn = toga.Button(
-            "My Files",
+            "\u25A4  My Files",
             on_press=self._show_files_tab,
-            style=Pack(width=100, padding=(0, 5, 0, 0), background_color="#dddddd")
+            style=Pack(width=120, padding=(Spacing.SM, Spacing.XS), background_color=Colors.BG_HEADER, color=Colors.TEXT_PRIMARY, font_size=Font.SIZE_BODY),
         )
         tab_buttons.add(self._files_tab_btn)
-        
+
         self._public_tab_btn = toga.Button(
-            "Public Files",
+            "\u2606  Public",
             on_press=self._show_public_tab,
-            style=Pack(width=100, padding=(0, 5, 0, 0), background_color="#dddddd")
+            style=Pack(width=120, padding=(Spacing.SM, Spacing.XS), background_color=Colors.BG_HEADER, color=Colors.TEXT_PRIMARY, font_size=Font.SIZE_BODY),
         )
         tab_buttons.add(self._public_tab_btn)
-        
+
         self._notifications_tab_btn = toga.Button(
-            "Notifications",
+            "\u2709  Notifications",
             on_press=self._show_notifications_tab,
-            style=Pack(width=100, padding=(0, 5, 0, 0), background_color="#dddddd")
+            style=Pack(width=140, padding=(Spacing.SM, Spacing.XS), background_color=Colors.BG_HEADER, color=Colors.TEXT_PRIMARY, font_size=Font.SIZE_BODY),
         )
         tab_buttons.add(self._notifications_tab_btn)
         
@@ -187,9 +181,11 @@ class FilesView:
         }
         for tab_id, btn in tabs.items():
             if tab_id == active_tab:
-                btn.style.background_color = "#4CAF50"
+                btn.style.background_color = Colors.PRIMARY
+                btn.style.color = Colors.TEXT_ON_PRIMARY
             else:
-                btn.style.background_color = "#dddddd"
+                btn.style.background_color = Colors.BG_HEADER
+                btn.style.color = Colors.TEXT_PRIMARY
     
     def _show_upload_tab(self, widget):
         """Switch to upload tab."""

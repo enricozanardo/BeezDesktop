@@ -2,6 +2,7 @@
 Transactions View
 
 Transaction management: send BZT, view history.
+Uses SearchableTable and LoadingIndicator for better UX.
 """
 
 import toga
@@ -9,380 +10,246 @@ from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 import asyncio
 
+from beezdesktop.theme import (
+    Colors, Font, Spacing,
+    page_header, card, spacer,
+    primary_button, secondary_button,
+    SearchableTable, LoadingIndicator,
+)
+
 
 class TransactionsView:
     """Transaction management view."""
-    
+
     def __init__(self, app):
         self.app = app
         self.recipient_input = None
         self.amount_input = None
-        self.history_table = None
-    
+        self._history_table = None
+        self._loading = None
+
     def build(self) -> toga.Box:
-        """Build the transactions view."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
-        
-        # Header
-        header = toga.Label(
-            "Transactions",
-            style=Pack(padding=(0, 0, 20, 0), font_size=24, font_weight="bold")
-        )
-        container.add(header)
-        
-        # Check if wallet is connected
+        container.add(page_header("Transactions", "Send tokens and view transaction history"))
+
         wallet_ok = self.app.client and self.app.client.is_wallet_connected()
-        print(f"[TX] Building view (wallet_connected={wallet_ok})", flush=True)
         if not wallet_ok:
-            no_wallet = toga.Label(
+            container.add(toga.Label(
                 "Please connect a wallet to send transactions.",
-                style=Pack(padding=20, color="#888888")
-            )
-            container.add(no_wallet)
+                style=Pack(padding=Spacing.XL, color=Colors.TEXT_MUTED, font_size=Font.SIZE_BODY),
+            ))
             return container
-        
-        # Send transaction section
-        send_section = self._build_send_section()
-        container.add(send_section)
-        
-        # Transaction history
-        history_section = self._build_history_section()
-        container.add(history_section)
-        
-        # Load history
-        asyncio.create_task(self._load_transaction_history())
-        
+
+        container.add(self._send_section())
+        container.add(spacer(Spacing.SECTION_GAP))
+        container.add(self._history_section())
+
+        asyncio.create_task(self._load_history())
         return container
-    
-    def _build_send_section(self) -> toga.Box:
-        """Build the send transaction section."""
-        section = toga.Box(
-            style=Pack(direction=COLUMN, padding=10, background_color="#f5f5f5")
-        )
-        
-        header = toga.Label(
-            "Send BZT",
-            style=Pack(font_size=16, font_weight="bold", padding=(0, 0, 10, 0))
-        )
-        section.add(header)
-        
-        # Recipient input
-        recipient_label = toga.Label(
-            "Recipient Address (paste with Ctrl+V):",
-            style=Pack(padding=(5, 0, 5, 0))
-        )
-        section.add(recipient_label)
-        
+
+    def _send_section(self) -> toga.Box:
+        section = card(title="Send BZT", bg=Colors.BG_CARD)
+
+        section.add(toga.Label(
+            "Recipient Address",
+            style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY, padding=(0, 0, Spacing.XS, 0)),
+        ))
         self.recipient_input = toga.TextInput(
-            placeholder="bez... (Ctrl+V to paste)",
-            style=Pack(width=450, padding=(0, 0, 10, 0))
+            placeholder="bez...",
+            style=Pack(flex=1, padding=(0, 0, Spacing.MD, 0)),
         )
         section.add(self.recipient_input)
-        
-        # Amount input
-        amount_label = toga.Label(
-            "Amount (BZT):",
-            style=Pack(padding=(5, 0, 5, 0))
-        )
-        section.add(amount_label)
-        
+
+        section.add(toga.Label(
+            "Amount (BZT)",
+            style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY, padding=(0, 0, Spacing.XS, 0)),
+        ))
         self.amount_input = toga.TextInput(
             placeholder="0.00",
-            style=Pack(width=150, padding=(0, 0, 10, 0))
+            style=Pack(width=160, padding=(0, 0, Spacing.MD, 0)),
         )
         section.add(self.amount_input)
-        
-        # Send button
-        send_btn = toga.Button(
-            "Send Transaction",
-            on_press=self._on_send_transaction,
-            style=Pack(width=200, padding=(10, 0, 0, 0))
-        )
-        section.add(send_btn)
-        
-        # Status label
+
+        btn_row = toga.Box(style=Pack(direction=ROW, alignment="center"))
+        btn_row.add(primary_button("Send Transaction", self._on_send))
         self.status_label = toga.Label(
             "",
-            style=Pack(padding=(10, 0, 0, 0), color="#666666")
+            style=Pack(padding=(0, 0, 0, Spacing.MD), font_size=Font.SIZE_SMALL, color=Colors.TEXT_SECONDARY),
         )
-        section.add(self.status_label)
-        
+        btn_row.add(self.status_label)
+        section.add(btn_row)
+
         return section
-    
-    def _build_history_section(self) -> toga.Box:
-        """Build the transaction history section."""
-        section = toga.Box(style=Pack(direction=COLUMN, padding=10, flex=1))
-        
-        # Header with refresh
-        header_row = toga.Box(style=Pack(direction=ROW, padding=(20, 0, 10, 0)))
-        
-        header = toga.Label(
+
+    def _history_section(self) -> toga.Box:
+        section = toga.Box(style=Pack(direction=COLUMN, flex=1))
+
+        header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, Spacing.SM, 0), alignment="center"))
+        header_row.add(toga.Label(
             "Transaction History",
-            style=Pack(font_size=16, font_weight="bold", flex=1)
-        )
-        header_row.add(header)
-        
-        refresh_btn = toga.Button(
+            style=Pack(font_size=Font.SIZE_H2, font_weight="bold", color=Colors.TEXT_PRIMARY, flex=1),
+        ))
+        header_row.add(secondary_button(
             "Refresh",
-            on_press=lambda w: asyncio.create_task(self._load_transaction_history()),
-            style=Pack(width=80)
-        )
-        header_row.add(refresh_btn)
-        
+            lambda w: asyncio.create_task(self._load_history()),
+            width=100,
+        ))
         section.add(header_row)
-        
-        # Transaction table
-        self.history_table = toga.Table(
+
+        # Loading indicator
+        self._loading = LoadingIndicator("Loading transactions...")
+        section.add(self._loading.box)
+
+        # Searchable table
+        self._history_table = SearchableTable(
             headings=["Type", "Amount", "To/From", "Block", "Status"],
-            data=[],
-            style=Pack(flex=1)
+            page_size=15,
+            search_placeholder="Search transactions...",
         )
-        section.add(self.history_table)
-        
+        section.add(self._history_table.box)
+
         return section
-    
-    async def _on_send_transaction(self, widget):
-        """Handle send transaction button."""
+
+    # ------------------------------------------------------------------ #
+    # HANDLERS
+    # ------------------------------------------------------------------ #
+
+    async def _on_send(self, widget):
         if not self.app.client:
             return
-        
+
         recipient = self.recipient_input.value.strip()
         amount_str = self.amount_input.value.strip()
-        
-        # Validation
+
         if not recipient:
-            await self.app.main_window.dialog(
-                toga.ErrorDialog("Error", "Please enter a recipient address.")
-            )
+            await self.app.main_window.dialog(toga.ErrorDialog("Error", "Please enter a recipient address."))
             return
-        
         if not recipient.startswith("bez"):
-            await self.app.main_window.dialog(
-                toga.ErrorDialog("Error", "Invalid recipient address. Must start with 'bez'.")
-            )
+            await self.app.main_window.dialog(toga.ErrorDialog("Error", "Invalid address. Must start with 'bez'."))
             return
-        
+
         try:
             amount = float(amount_str)
             if amount <= 0:
                 raise ValueError()
         except (ValueError, TypeError):
-            await self.app.main_window.dialog(
-                toga.ErrorDialog("Error", "Please enter a valid amount.")
-            )
+            await self.app.main_window.dialog(toga.ErrorDialog("Error", "Please enter a valid amount."))
             return
-        
-        # Update status
-        self.status_label.text = "Sending transaction..."
-        
-        # Send transaction asynchronously
+
+        self.status_label.text = "Sending..."
+
         try:
             loop = asyncio.get_event_loop()
-            
-            # Use the new HTTP API method
             response, status = await loop.run_in_executor(
-                None,
-                lambda: self.app.client.create_and_send_transaction(amount, recipient)
+                None, lambda: self.app.client.create_and_send_transaction(amount, recipient)
             )
-            
             if status in (200, 201, 202):
                 tx_hash = response.get('tx_hash', 'submitted')
-                self.status_label.text = f"✓ Sent: {tx_hash[:16]}..."
-                await self.app.main_window.dialog(
-                    toga.InfoDialog(
-                        "Success",
-                        f"Transaction sent!\n\n"
-                        f"Hash: {tx_hash[:32]}...\n"
-                        f"Amount: {amount} BZT\n"
-                        f"To: {recipient[:20]}..."
-                    )
-                )
-                # Clear inputs
+                self.status_label.text = f"\u2713 Sent: {tx_hash[:16]}..."
+                await self.app.main_window.dialog(toga.InfoDialog(
+                    "Success",
+                    f"Transaction sent!\n\nHash: {tx_hash[:32]}...\nAmount: {amount} BZT\nTo: {recipient[:20]}...",
+                ))
                 self.recipient_input.value = ""
                 self.amount_input.value = ""
-                # Refresh history
-                await self._load_transaction_history()
+                await self._load_history()
             else:
-                error_msg = response.get('error', response.get('message', 'Unknown error'))
-                self.status_label.text = f"✗ Failed: {error_msg}"
-                await self.app.main_window.dialog(
-                    toga.ErrorDialog("Error", f"Transaction failed: {error_msg}")
-                )
-                
+                err = response.get('error', response.get('message', 'Unknown error'))
+                self.status_label.text = f"\u2717 Failed: {err}"
+                await self.app.main_window.dialog(toga.ErrorDialog("Error", f"Transaction failed: {err}"))
         except Exception as e:
-            self.status_label.text = f"✗ Error: {e}"
-            await self.app.main_window.dialog(
-                toga.ErrorDialog("Error", f"Failed to send transaction: {e}")
-            )
-    
-    async def _load_transaction_history(self):
-        """Load transaction history."""
-        if not self.app.client or not self.history_table:
+            self.status_label.text = f"\u2717 Error: {e}"
+            await self.app.main_window.dialog(toga.ErrorDialog("Error", f"Failed: {e}"))
+
+    async def _load_history(self):
+        if not self.app.client or not self._history_table:
             return
-        
         if not self.app.client.is_wallet_connected():
             return
-        
+
+        self._loading.show("Loading transactions...")
+
         loop = asyncio.get_event_loop()
-        
         try:
             result, status = await loop.run_in_executor(
-                None,
-                lambda: self.app.client.get_wallet_transactions(None, 20, 0, "all")
+                None, lambda: self.app.client.get_wallet_transactions(None, 50, 0, "all")
             )
-            
-            print(f"[TX] History loaded: status={status}, "
-                  f"count={len(result.get('transactions', [])) if result else 0}",
-                  flush=True)
 
-            self.history_table.data.clear()
-            
+            rows = []
             if status == 200 and result:
-                transactions = result.get('transactions', [])
-                if transactions is None:
-                    transactions = []
-                    
+                transactions = result.get('transactions', []) or []
                 wallet = self.app.client.get_current_wallet()
                 my_address = wallet.address if wallet else ""
-                
+
                 for tx in transactions:
                     if tx is None:
                         continue
-                    tx_type = tx.get('type', 'transfer') or 'transfer'
-                    sender = tx.get('sender', '') or ''
-                    recipient = tx.get('recipient', '') or ''
-                    amount = tx.get('amount', '0') or '0'
-                    block_height = tx.get('block_height', '--') or '--'
-                    tx_direction = tx.get('direction', '')
-                    
-                    # Handle ownership transaction display
-                    if tx_type in ('ownership_request', 'ownership_accept', 'ownership_reject', 'ownership_cancel'):
-                        current_owner = tx.get('current_owner', '') or sender or ''
-                        new_owner = tx.get('new_owner', '') or recipient or ''
-                        asking_price = tx.get('asking_price', amount) or '0'
-                        
-                        if tx_type == 'ownership_request':
-                            if tx_direction == 'sent':
-                                display_type = "↑ Transfer Offer"
-                                direction = f"To: {new_owner[:12]}..." if new_owner else "To: --"
-                            else:
-                                display_type = "↓ Transfer Offer"
-                                direction = f"From: {current_owner[:12]}..." if current_owner else "From: --"
-                            amount = str(asking_price)
-                        elif tx_type == 'ownership_accept':
-                            if tx_direction == 'received':
-                                display_type = "↓ Asset Sale"
-                                direction = f"From: {new_owner[:12]}..." if new_owner else "From: buyer"
-                            else:
-                                display_type = "↑ Asset Purchase"
-                                direction = f"To: {current_owner[:12]}..." if current_owner else "To: seller"
-                            amount = str(asking_price)
-                        elif tx_type == 'ownership_reject':
-                            display_type = "✗ Transfer Rejected"
-                            direction = f"File transfer"
-                            amount = "0 BZT"
-                        elif tx_type == 'ownership_cancel':
-                            display_type = "✗ Transfer Cancelled"
-                            direction = f"File transfer"
-                            amount = "0 BZT"
-                    elif tx_type == 'penalty':
-                        dam_addr = tx.get('dam_address', '') or ''
-                        target_addr = tx.get('target_node_address', '') or ''
-                        display_type = "⚠ Penalty"
-                        direction = f"DAM: {dam_addr[:12]}... → {target_addr[:12]}..."
-                        amount = f"Score: {tx.get('penalty_score', '?')}"
-                    elif tx_type == 'escrow_release':
-                        escrow_file = tx.get('from_escrow', '') or ''
-                        recipient = tx.get('recipient', '') or ''
-                        display_type = "↓ Storage Reward"
-                        direction = f"Escrow: {escrow_file[:12]}..."
-                    elif tx_type == 'dam_verification_reward':
-                        escrow_file = tx.get('from_escrow', '') or ''
-                        display_type = "↓ DAM Reward"
-                        direction = f"Escrow: {escrow_file[:12]}..."
-                    elif tx_type == 'update_chunk_location':
-                        old_node = tx.get('old_node_id', '') or ''
-                        new_node = tx.get('new_node_id', '') or ''
-                        display_type = "↔ Chunk Migration"
-                        direction = f"{old_node[:8]}... → {new_node[:8]}..."
-                        amount = f"{len(tx.get('migrated_chunks', []))} chunks"
-                    elif tx_type == 'datrone_reward':
-                        display_type = "↓ Datrone Reward"
-                        direction = f"To: {recipient[:12]}..." if recipient else "To: --"
-                    elif tx_type == 'smart_index':
-                        smart_wallet = tx.get('smart_node_wallet', '') or recipient
-                        payer = sender or tx.get('wallet_address', '') or ''
-                        file_id = tx.get('smart_file_id', '') or tx.get('file_id', '') or ''
-                        chunks = tx.get('num_chunks_indexed', 0)
-                        total = tx.get('total_cost', 0) or tx.get('amount_numeric', 0)
-                        display_type = "↑ Smart Index"
-                        if tx_direction == 'sent' or payer == my_address:
-                            direction = f"To: {smart_wallet[:12]}... ({chunks} chunks)"
-                        else:
-                            direction = f"From: {payer[:12]}... ({chunks} chunks)"
-                        amount = total
-                    elif tx_type == 'smart_query':
-                        smart_wallet = tx.get('smart_node_wallet', '') or recipient
-                        payer = sender or tx.get('wallet_address', '') or ''
-                        query_cost = tx.get('query_cost', 0) or tx.get('cost', 0) or tx.get('amount_numeric', 0)
-                        display_type = "↑ Smart Query"
-                        if tx_direction == 'sent' or payer == my_address:
-                            direction = f"To: {smart_wallet[:12]}..."
-                        else:
-                            direction = f"From: {payer[:12]}..."
-                        amount = query_cost
-                    elif tx_type == 'knowledge_publish':
-                        seller = tx.get('seller_address', '') or ''
-                        listing_id = tx.get('listing_id', '') or ''
-                        display_type = "↑ Knowledge Publish"
-                        direction = f"Listing: {listing_id[:12]}..."
-                        amount = "0"
-                    elif tx_type == 'knowledge_query':
-                        buyer = tx.get('buyer_address', '') or ''
-                        seller = tx.get('seller_address', '') or ''
-                        cost = tx.get('cost', 0)
-                        if tx_direction == 'sent' or buyer == my_address:
-                            display_type = "↑ Knowledge Query"
-                            direction = f"To: {seller[:12]}..."
-                        else:
-                            display_type = "↓ Knowledge Query"
-                            direction = f"From: {buyer[:12]}..."
-                        amount = cost
-                    elif tx_type == 'knowledge_purchase':
-                        buyer = tx.get('buyer_address', '') or ''
-                        seller = tx.get('seller_address', '') or ''
-                        price = tx.get('purchase_price', 0)
-                        if tx_direction == 'sent' or buyer == my_address:
-                            display_type = "↑ Knowledge Purchase"
-                            direction = f"To: {seller[:12]}..."
-                        else:
-                            display_type = "↓ Knowledge Sale"
-                            direction = f"From: {buyer[:12]}..."
-                        amount = price
-                    else:
-                        # Standard transaction display
-                        if sender == my_address:
-                            direction = f"To: {recipient[:12]}..." if recipient else "To: --"
-                            display_type = f"↑ {tx_type}"
-                        else:
-                            direction = f"From: {sender[:12]}..." if sender else "From: --"
-                            display_type = f"↓ {tx_type}"
-                    
-                    self.history_table.data.append([
-                        display_type,
-                        str(amount),
-                        direction,
-                        str(block_height),
-                        "Confirmed"
-                    ])
-                    
-                if not transactions:
-                    self.history_table.data.append([
-                        "--", "No transactions yet", "--", "--", "--"
-                    ])
-            else:
-                error = result.get('error', 'Unknown') if result else 'No response'
-                print(f"[TX] History error: {error}", flush=True)
-                
+                    rows.append(self._format_tx_row(tx, my_address))
+
+            self._history_table.set_data(rows)
         except Exception as e:
             print(f"[TX] History exception: {e}", flush=True)
+        finally:
+            self._loading.hide()
+
+    def _format_tx_row(self, tx: dict, my_address: str) -> tuple:
+        tx_type = tx.get('type', 'transfer') or 'transfer'
+        sender = tx.get('sender', '') or ''
+        recipient = tx.get('recipient', '') or ''
+        amount = tx.get('amount', '0') or '0'
+        block_height = tx.get('block_height', '--') or '--'
+        tx_direction = tx.get('direction', '')
+
+        if tx_type in ('ownership_request', 'ownership_accept', 'ownership_reject', 'ownership_cancel'):
+            current_owner = tx.get('current_owner', '') or sender or ''
+            new_owner = tx.get('new_owner', '') or recipient or ''
+            asking_price = tx.get('asking_price', amount) or '0'
+
+            if tx_type == 'ownership_request':
+                if tx_direction == 'sent':
+                    display_type, direction = "\u2191 Transfer Offer", f"To: {new_owner[:12]}..." if new_owner else "To: --"
+                else:
+                    display_type, direction = "\u2193 Transfer Offer", f"From: {current_owner[:12]}..." if current_owner else "From: --"
+                amount = str(asking_price)
+            elif tx_type == 'ownership_accept':
+                if tx_direction == 'received':
+                    display_type, direction = "\u2193 Asset Sale", f"From: {new_owner[:12]}..." if new_owner else "From: buyer"
+                else:
+                    display_type, direction = "\u2191 Asset Purchase", f"To: {current_owner[:12]}..." if current_owner else "To: seller"
+                amount = str(asking_price)
+            elif tx_type == 'ownership_reject':
+                display_type, direction, amount = "\u2717 Transfer Rejected", "File transfer", "0"
+            else:
+                display_type, direction, amount = "\u2717 Transfer Cancelled", "File transfer", "0"
+        elif tx_type == 'penalty':
+            dam_addr = tx.get('dam_address', '') or ''
+            target = tx.get('target_node_address', '') or ''
+            display_type = "\u26A0 Penalty"
+            direction = f"DAM: {dam_addr[:12]}..."
+            amount = f"Score: {tx.get('penalty_score', '?')}"
+        elif tx_type == 'escrow_release':
+            display_type, direction = "\u2193 Storage Reward", f"Escrow: {(tx.get('from_escrow', '') or '')[:12]}..."
+        elif tx_type == 'dam_verification_reward':
+            display_type, direction = "\u2193 DAM Reward", f"Escrow: {(tx.get('from_escrow', '') or '')[:12]}..."
+        elif tx_type == 'update_chunk_location':
+            old_n = tx.get('old_node_id', '') or ''
+            new_n = tx.get('new_node_id', '') or ''
+            display_type = "\u21C4 Chunk Migration"
+            direction = f"{old_n[:8]}... \u2192 {new_n[:8]}..."
+            amount = f"{len(tx.get('migrated_chunks', []))} chunks"
+        elif tx_type == 'datrone_reward':
+            display_type = "\u2193 Datrone Reward"
+            direction = f"To: {recipient[:12]}..." if recipient else "To: --"
+        elif tx_type in ('smart_index', 'smart_query', 'knowledge_publish', 'knowledge_query', 'knowledge_purchase'):
+            display_type = f"\u21C4 {tx_type.replace('_', ' ').title()}"
+            direction = f"To: {recipient[:12]}..." if recipient else f"From: {sender[:12]}..."
+            amount = str(tx.get('total_cost', tx.get('cost', tx.get('amount', '0'))))
+        else:
+            if sender == my_address:
+                direction = f"To: {recipient[:12]}..." if recipient else "To: --"
+                display_type = f"\u2191 {tx_type}"
+            else:
+                direction = f"From: {sender[:12]}..." if sender else "From: --"
+                display_type = f"\u2193 {tx_type}"
+
+        return (display_type, str(amount), direction, str(block_height), "Confirmed")

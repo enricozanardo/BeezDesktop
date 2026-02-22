@@ -15,6 +15,8 @@ from toga.style.pack import COLUMN, ROW
 import threading
 import hashlib
 
+from beezdesktop.theme import Colors, Font, Spacing, page_header
+
 
 class KnowledgeView:
     """Knowledge marketplace interface."""
@@ -32,27 +34,13 @@ class KnowledgeView:
         """Build the knowledge marketplace view."""
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
 
-        # Header
-        header = toga.Label(
-            "Knowledge Marketplace",
-            style=Pack(padding=(0, 0, 5, 0), font_size=24, font_weight="bold"),
-        )
-        container.add(header)
+        container.add(page_header("Knowledge Marketplace", "Buy, sell, and query knowledge collections powered by RAG"))
 
-        subtitle = toga.Label(
-            "Buy, sell, and query knowledge collections powered by RAG",
-            style=Pack(padding=(0, 0, 15, 0), font_size=12, color="#666666"),
-        )
-        container.add(subtitle)
-
-        # Wallet check
         if not self.app.client or not self.app.client.is_wallet_connected():
-            container.add(
-                toga.Label(
-                    "Please connect a wallet first.",
-                    style=Pack(padding=20, font_size=14, color="#cc0000"),
-                )
-            )
+            container.add(toga.Label(
+                "Please connect a wallet first.",
+                style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
+            ))
             return container
 
         # Smart node selector
@@ -101,7 +89,7 @@ class KnowledgeView:
 
     def _build_tab_bar(self) -> toga.Box:
         """Build the tab switching bar."""
-        bar = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
+        bar = toga.Box(style=Pack(direction=ROW, padding=(0, 0, Spacing.MD, 0)))
         tabs = [
             ("Browse", self._show_browse_tab),
             ("Query", self._show_query_tab),
@@ -112,7 +100,13 @@ class KnowledgeView:
             btn = toga.Button(
                 label,
                 on_press=handler,
-                style=Pack(padding=5, width=110),
+                style=Pack(
+                    padding=(Spacing.SM, Spacing.XS),
+                    width=120,
+                    background_color=Colors.BG_HEADER,
+                    color=Colors.TEXT_PRIMARY,
+                    font_size=Font.SIZE_BODY,
+                ),
             )
             bar.add(btn)
         return bar
