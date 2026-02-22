@@ -823,19 +823,8 @@ class FilesView:
             print(f"[FILES] Upload result: status={status}, result={result}", flush=True)
             
             if status in (200, 201):
-                # Store tags via separate API call (tags are in PostgreSQL, not in the blockchain TX)
                 if upload_tags:
-                    try:
-                        tag_result, tag_status = await loop.run_in_executor(
-                            None,
-                            lambda: self.app.client.update_asset_tags(file_id, upload_tags)
-                        )
-                        if tag_status == 200:
-                            print(f"[FILES] Tags stored: {upload_tags}", flush=True)
-                        else:
-                            print(f"[FILES] Warning: Failed to store tags: {tag_result}", flush=True)
-                    except Exception as tag_err:
-                        print(f"[FILES] Warning: Failed to store tags: {tag_err}", flush=True)
+                    print(f"[FILES] Tags included in TX: {upload_tags}", flush=True)
                 
                 self.upload_status.text = f"✓ Uploaded: {file_name}"
                 await self.app.main_window.dialog(
