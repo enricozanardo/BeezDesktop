@@ -1229,7 +1229,7 @@ class FilesView:
                     try:
                         import base64
                         preview_bytes = base64.b64decode(preview_b64)
-                        preview_img = toga.Image(data=preview_bytes)
+                        preview_img = toga.Image(src=preview_bytes)
                         
                         w = result.get("preview_width", "?")
                         h = result.get("preview_height", "?")
@@ -2515,7 +2515,7 @@ class FilesView:
                     try:
                         import base64
                         preview_bytes = base64.b64decode(preview_b64)
-                        preview_img = toga.Image(data=preview_bytes)
+                        preview_img = toga.Image(src=preview_bytes)
                         tags_str = ", ".join(tags) if tags else ""
                         subtitle = (
                             f"{file_name}  |  Price: {price} BZT  |  "
@@ -3049,7 +3049,7 @@ class FilesView:
                 if preview_b64:
                     import base64
                     preview_bytes = base64.b64decode(preview_b64)
-                    return toga.Image(data=preview_bytes)
+                    return toga.Image(src=preview_bytes)
         except Exception as e:
             print(f"[FILES] Error fetching preview: {e}", flush=True)
         
