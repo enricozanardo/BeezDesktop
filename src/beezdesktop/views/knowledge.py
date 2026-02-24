@@ -18,6 +18,18 @@ import hashlib
 from beezdesktop.theme import Colors, Font, Spacing, page_header
 
 
+_embed_model = None
+
+
+def _get_embed_model():
+    """Lazy-load and cache the fastembed model (heavy on first call)."""
+    global _embed_model
+    if _embed_model is None:
+        from fastembed import TextEmbedding
+        _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
+    return _embed_model
+
+
 class KnowledgeView:
     """Knowledge marketplace interface."""
 
@@ -406,9 +418,14 @@ class KnowledgeView:
 
     def _get_smart_url(self) -> str:
         """Resolve the selected smart node to an HTTP URL."""
+        if not self.selected_smart_node:
+            return "http://localhost:5000"
         from shared.client_core.docker_mapping import resolve_node_address
         ip = self.selected_smart_node.get("ip", "smart1")
-        host_ip, port = resolve_node_address(ip, use_zmq=False)
+        try:
+            host_ip, port = resolve_node_address(ip, use_zmq=False)
+        except Exception:
+            host_ip, port = ip, 5000
         return f"http://{host_ip}:{port}"
 
     # === Browse Handlers ===
@@ -421,15 +438,24 @@ class KnowledgeView:
 
         self.status_label.text = "Searching..."
 
+        # Capture UI values on the main thread BEFORE spawning the worker.
+        # Accessing Toga widgets from a background thread deadlocks on Windows.
+        query_text = ""
+        tags = None
+        try:
+            si = getattr(self, "search_input", None)
+            query_text = si.value.strip() if si and si.value else ""
+            ti = getattr(self, "tag_input", None)
+            tags = [t.strip() for t in ti.value.split(",") if t.strip()] if ti and ti.value else None
+        except Exception:
+            pass
+
+        smart_url = self._get_smart_url()
+
         def do_search():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(self._get_smart_url())
-
-                query = getattr(self, "search_input", None)
-                query_text = query.value.strip() if query and query.value else ""
-                tag_text = getattr(self, "tag_input", None)
-                tags = [t.strip() for t in tag_text.value.split(",") if t.strip()] if tag_text and tag_text.value else None
+                client = KnowledgeMarketplaceClient(smart_url)
 
                 results = client.search_marketplace(query=query_text, tags=tags)
                 self.listings = results
@@ -576,40 +602,39 @@ class KnowledgeView:
             return
 
         self.ask_btn.enabled = False
-        self.query_cost_label.text = "Processing query..."
+        self.query_cost_label.text = "Loading embedding model & processing..."
         self.answer_display.value = ""
+
+        # Capture all UI / state values on the main thread before spawning
+        q_text = query_text.strip()
+        smart_url = self._get_smart_url()
+        listing = dict(self.selected_listing)
+        wallet = self.app.client.get_current_wallet()
+        smart_node_id = self.selected_smart_node.get("node_id", "")
+        smart_node_wallet = self.selected_smart_node.get("wallet_address", "")
 
         def do_query():
             try:
                 from shared.client_core.knowledge_client import (
                     KnowledgeMarketplaceClient, build_knowledge_query_tx,
                 )
-                from shared.client_core.docker_mapping import resolve_node_address
 
-                smart_url = self._get_smart_url()
                 client = KnowledgeMarketplaceClient(smart_url)
-                wallet = self.app.client.get_current_wallet()
-                listing = self.selected_listing
 
-                # Generate query embedding
-                from fastembed import TextEmbedding
-                model = TextEmbedding("BAAI/bge-small-en-v1.5")
-                embeddings = list(model.embed([query_text.strip()]))
+                model = _get_embed_model()
+                embeddings = list(model.embed([q_text]))
                 query_vector = embeddings[0].tolist()
 
                 result = client.query_listing(
                     listing_id=listing["listing_id"],
-                    query_text=query_text.strip(),
+                    query_text=q_text,
                     query_vector=query_vector,
                     buyer_address=wallet.address,
                     top_k=5,
                 )
 
-                # Build and broadcast knowledge_query TX
                 tx_msg = ""
                 try:
-                    smart_node_id = self.selected_smart_node.get("node_id", "")
-                    smart_node_wallet = self.selected_smart_node.get("wallet_address", "")
                     tx = build_knowledge_query_tx(
                         buyer_address=wallet.address,
                         seller_address=listing.get("seller_address", ""),
@@ -672,38 +697,41 @@ class KnowledgeView:
         self.status_label.text = f"Purchasing {listing.get('title', 'listing')}..."
         self.buy_listing_btn.enabled = False
 
+        smart_url = self._get_smart_url()
+        wallet = self.app.client.get_current_wallet()
+        wallet_address = wallet.address
+        privkey_hex = wallet.privkey.hex()
+        pubkey_hex = wallet.get_pubkey_hex()
+        listing_id = listing["listing_id"]
+
         def do_purchase():
             try:
                 from shared.client_core.knowledge_client import (
                     KnowledgeMarketplaceClient, build_knowledge_purchase_tx,
                 )
 
-                smart_url = self._get_smart_url()
                 client = KnowledgeMarketplaceClient(smart_url)
-                wallet = self.app.client.get_current_wallet()
 
-                # Fetch full listing details (search results don't include file_ids)
-                full_listing = client.get_listing(listing["listing_id"])
+                full_listing = client.get_listing(listing_id)
                 file_ids = full_listing.get("file_ids", [])
                 if not file_ids:
                     raise ValueError("Listing has no file_ids -- cannot build purchase TX")
 
                 result = client.purchase_listing(
-                    listing_id=listing["listing_id"],
-                    buyer_address=wallet.address,
+                    listing_id=listing_id,
+                    buyer_address=wallet_address,
                 )
 
-                # Build and broadcast knowledge_purchase TX
                 tx_msg = ""
                 try:
                     tx = build_knowledge_purchase_tx(
-                        buyer_address=wallet.address,
+                        buyer_address=wallet_address,
                         seller_address=full_listing.get("seller_address", ""),
-                        listing_id=listing["listing_id"],
+                        listing_id=listing_id,
                         purchase_price=float(full_listing.get("purchase_price", 0)),
                         file_ids=file_ids,
-                        private_key_hex=wallet.privkey.hex(),
-                        public_key_hex=wallet.get_pubkey_hex(),
+                        private_key_hex=privkey_hex,
+                        public_key_hex=pubkey_hex,
                     )
                     resp, status = self.app.client.send_raw_transaction(tx)
                     if status == 200:
@@ -734,13 +762,17 @@ class KnowledgeView:
         if not self.selected_smart_node:
             return
 
+        smart_url = self._get_smart_url()
+        wallet = self.app.client.get_current_wallet()
+        wallet_address = wallet.address if wallet else None
+
         def do_refresh():
             try:
+                if not wallet_address:
+                    raise ValueError("No wallet connected")
                 from shared.client_core.smart_client import SmartNodeClient
-                smart_url = self._get_smart_url()
-                client = SmartNodeClient(smart_url, timeout=10)
-                wallet = self.app.client.get_current_wallet()
-                stats = client.get_workspace_stats(wallet.address)
+                client = SmartNodeClient(smart_url, timeout=15)
+                stats = client.get_workspace_stats(wallet_address)
                 files = stats.get("files", [])
 
                 def update():
@@ -826,24 +858,24 @@ class KnowledgeView:
 
         file_ids = list(self._pub_selected_files)
 
+        wallet = self.app.client.get_current_wallet()
+        marketplace_key = hashlib.sha256(wallet.privkey).digest()
+        smart_url = self._get_smart_url()
+        smart_node_id = self.selected_smart_node.get("node_id", "")
+        wallet_address = wallet.address
+        privkey_hex = wallet.privkey.hex()
+        pubkey_hex = wallet.get_pubkey_hex()
+
         def do_publish():
             try:
                 from shared.client_core.knowledge_client import (
                     KnowledgeMarketplaceClient, build_knowledge_publish_tx,
                 )
 
-                wallet = self.app.client.get_current_wallet()
-                # Use the same wallet-derived AES key that was used to encrypt
-                # the file chunks during indexing.  The smart node stores this
-                # key so it can decrypt chunks on behalf of marketplace buyers
-                # and return LLM-synthesized answers only (never raw text).
-                marketplace_key = hashlib.sha256(wallet.privkey).digest()
-
-                smart_url = self._get_smart_url()
                 client = KnowledgeMarketplaceClient(smart_url)
 
                 result = client.publish_listing(
-                    seller_address=wallet.address,
+                    seller_address=wallet_address,
                     title=title,
                     description=description,
                     tags=tags,
@@ -857,12 +889,10 @@ class KnowledgeView:
                 total_files = result.get("total_files", 0)
                 total_chunks = result.get("total_chunks", 0)
 
-                # Broadcast knowledge_publish TX
                 tx_msg = ""
                 try:
-                    smart_node_id = self.selected_smart_node.get("node_id", "")
                     tx = build_knowledge_publish_tx(
-                        seller_address=wallet.address,
+                        seller_address=wallet_address,
                         listing_id=listing_id,
                         smart_node_id=smart_node_id,
                         title=title,
@@ -870,8 +900,8 @@ class KnowledgeView:
                         chunk_count=total_chunks,
                         price_per_query=ppq,
                         purchase_price=pp,
-                        private_key_hex=wallet.privkey.hex(),
-                        public_key_hex=wallet.get_pubkey_hex(),
+                        private_key_hex=privkey_hex,
+                        public_key_hex=pubkey_hex,
                     )
                     resp, status = self.app.client.send_raw_transaction(tx)
                     if status == 200:
@@ -903,12 +933,17 @@ class KnowledgeView:
         if not self.selected_smart_node:
             return
 
+        smart_url = self._get_smart_url()
+        wallet = self.app.client.get_current_wallet()
+        wallet_address = wallet.address if wallet else None
+
         def do_refresh():
             try:
+                if not wallet_address:
+                    raise ValueError("No wallet connected")
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(self._get_smart_url())
-                wallet = self.app.client.get_current_wallet()
-                results = client.get_my_listings(wallet.address)
+                client = KnowledgeMarketplaceClient(smart_url)
+                results = client.get_my_listings(wallet_address)
                 self.my_listings = results
 
                 def update():
@@ -959,14 +994,16 @@ class KnowledgeView:
         listing = self.my_listings[self._my_selected_idx]
         new_status = "paused" if listing.get("status") == "active" else "active"
 
+        smart_url = self._get_smart_url()
+        wallet = self.app.client.get_current_wallet()
+        wallet_address = wallet.address if wallet else ""
+        lid = listing["listing_id"]
+
         def do_update():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(self._get_smart_url())
-                wallet = self.app.client.get_current_wallet()
-                client.update_listing(
-                    listing["listing_id"], wallet.address, status=new_status
-                )
+                client = KnowledgeMarketplaceClient(smart_url)
+                client.update_listing(lid, wallet_address, status=new_status)
                 self.app.loop.call_soon_threadsafe(
                     setattr, self.status_label, "text",
                     f"Listing {new_status}"
@@ -987,12 +1024,16 @@ class KnowledgeView:
         listing = self.my_listings[self._my_selected_idx]
         self.status_label.text = "Unpublishing..."
 
+        smart_url = self._get_smart_url()
+        wallet = self.app.client.get_current_wallet()
+        wallet_address = wallet.address if wallet else ""
+        lid = listing["listing_id"]
+
         def do_delete():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(self._get_smart_url())
-                wallet = self.app.client.get_current_wallet()
-                client.delete_listing(listing["listing_id"], wallet.address)
+                client = KnowledgeMarketplaceClient(smart_url)
+                client.delete_listing(lid, wallet_address)
                 self.app.loop.call_soon_threadsafe(
                     setattr, self.status_label, "text", "Listing unpublished."
                 )

@@ -35,50 +35,73 @@ BeezDesktop/
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.11+
+- Git (with submodule support)
 - System dependencies for GTK (Linux) or native GUI (macOS/Windows)
 
 ### Installation
 
-1. Install system dependencies (Linux):
+1. **Clone with submodules** (the `shared/` folder is a git submodule pointing to BeezShared):
 ```bash
-sudo apt install libgirepository2.0-dev libcairo2-dev libpango1.0-dev libwebkit2gtk-4.1-dev
+git clone --recurse-submodules https://github.com/enricozanardo/BeezDesktop.git
+cd BeezDesktop
+git checkout ez_dev
+git submodule update --init --recursive
 ```
 
-2. Create virtual environment:
+If you already cloned without `--recurse-submodules`, initialize the submodule:
 ```bash
-python -m venv venv
-source venv/bin/activate  # Linux/macOS
-# or: venv\Scripts\activate  # Windows
+cd BeezDesktop
+git submodule update --init --recursive
 ```
 
-3. Install in development mode:
+2. **Install system dependencies** (Debian/Ubuntu):
+
+For **Ubuntu 24.04+ / Debian 13+** (GObject Introspection 2.x):
 ```bash
-# From the BeezMaster root directory
-pip install -e shared/
+sudo apt install libgirepository-2.0-dev libcairo2-dev libpango1.0-dev \
+    libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 python3-venv python3-dev
 ```
 
-4. Install Briefcase for packaging:
+For **Debian 12 / Ubuntu 22.04** (GObject Introspection 1.x):
 ```bash
+sudo apt install libgirepository1.0-dev libcairo2-dev libpango1.0-dev \
+    libwebkit2gtk-4.1-dev gir1.2-webkit2-4.1 python3-venv python3-dev
+```
+
+> **Tip**: Not sure which one? Run `apt search libgirepository` and install whichever `-dev` package is available.
+
+3. **Create virtual environment and install Briefcase**:
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install briefcase
+pip install -r shared/requirements.txt
 ```
 
 ### Running in Development
 
 ```bash
-cd BeezDesktop
 briefcase dev
 ```
+
+Briefcase automatically adds `shared/` to the Python path (configured in `pyproject.toml` under `sources`). No need to `pip install` the shared module separately.
 
 ### Building for Distribution
 
 ```bash
-# Create a runnable app
 briefcase create
 briefcase build
-
-# Package as installer
 briefcase package
+```
+
+### Updating the Shared Module
+
+The `shared/` folder tracks the `ez_dev` branch of BeezShared. To update:
+```bash
+cd shared
+git pull origin ez_dev
+cd ..
 ```
 
 ## Views
