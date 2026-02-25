@@ -16,7 +16,7 @@ import os
 import uuid
 from datetime import datetime, timedelta
 
-from beezdesktop.theme import Colors, Font, Spacing, page_header
+from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
 
 # Import selectable components for text selection support
 # Disabled temporarily to debug button issues
@@ -141,6 +141,10 @@ class FilesView:
         tab_buttons.add(self._notifications_tab_btn)
         
         container.add(tab_buttons)
+
+        # Loading indicator
+        self._loading = LoadingIndicator("Loading...")
+        container.add(self._loading.box)
         
         # Tab content container
         self._tab_container = toga.Box(style=Pack(direction=COLUMN, flex=1))
@@ -170,6 +174,16 @@ class FilesView:
         
         print("[FILES] View built successfully", flush=True)
         return container
+
+    def _set_busy(self, busy: bool, message: str = "Loading..."):
+        """Show/hide the loading indicator."""
+        try:
+            if busy:
+                self._loading.show(message)
+            else:
+                self._loading.hide()
+        except Exception:
+            pass
     
     def _update_tab_buttons(self, active_tab: str):
         """Update tab button styles based on active tab."""
@@ -778,6 +792,7 @@ class FilesView:
         
         print("[FILES] Starting upload...", flush=True)
         self.upload_status.text = f"Uploading {num_chunks} chunk(s)... please wait"
+        self._set_busy(True, f"Uploading {file_name}...")
         
         # Force UI update
         await asyncio.sleep(0.1)
@@ -839,11 +854,12 @@ class FilesView:
                 self.selected_file_label.text = "No file selected"
                 self._update_cost_estimate()
                 
+                self._set_busy(False)
                 # Refresh files list
                 await self._load_files_async()
             else:
+                self._set_busy(False)
                 error = result.get('error', result.get('message', 'Unknown error'))
-                # Check for chunk failure details
                 failed_chunks = result.get("failed_chunks", [])
                 
                 if failed_chunks:
@@ -861,6 +877,7 @@ class FilesView:
                 )
             
         except Exception as e:
+            self._set_busy(False)
             print(f"[FILES] Upload error: {e}", flush=True)
             import traceback
             traceback.print_exc()
@@ -1283,16 +1300,14 @@ class FilesView:
             if not folder_path:
                 return
             
-            # Start download
-            await self.app.main_window.dialog(
-                toga.InfoDialog("Downloading", f"Downloading {file_name}...")
-            )
+            self._set_busy(True, f"Downloading {file_name}...")
             
             loop = asyncio.get_event_loop()
             result, status = await loop.run_in_executor(
                 None,
                 lambda: self.app.client.download_file(file_id, str(folder_path))
             )
+            self._set_busy(False)
             
             if status == 200:
                 await self.app.main_window.dialog(
@@ -1303,7 +1318,6 @@ class FilesView:
                 )
             else:
                 error = result.get("error", "Unknown error")
-                # Check for chunk failure details
                 failed_chunks = result.get("failed_chunks", [])
                 total_chunks = result.get("total_chunks", 0)
                 successful_chunks = result.get("successful_chunks", 0)
@@ -1323,6 +1337,7 @@ class FilesView:
                 )
                 
         except Exception as e:
+            self._set_busy(False)
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", f"Download failed: {e}")
             )
@@ -2146,12 +2161,15 @@ class FilesView:
     
     async def _load_files_async(self):
         """Load files from blockchain asynchronously."""
+        self._set_busy(True, "Loading your files...")
         if not self.app.client or not self.files_table:
             print("[FILES] Client or table not available", flush=True)
+            self._set_busy(False)
             return
         
         if not self.app.client.is_wallet_connected():
             print("[FILES] Wallet not connected", flush=True)
+            self._set_busy(False)
             return
         
         # Check if chain nodes are available
@@ -2168,6 +2186,7 @@ class FilesView:
             
             if not chain_nodes:
                 print("[FILES] Still no chain nodes after waiting", flush=True)
+                self._set_busy(False)
                 self.files_table.data.clear()
                 self.files_table.data.append([
                     "Error", "No chain nodes", "--", "--", "--", "--", "Wait for network"
@@ -2266,6 +2285,8 @@ class FilesView:
                 self.files_table.data.append([
                     "Error", str(e)[:30], "--", "--", "--", "--", "Check console"
                 ])
+        finally:
+            self._set_busy(False)
     
     # =========================================================================
     # PUBLIC FILES SECTION

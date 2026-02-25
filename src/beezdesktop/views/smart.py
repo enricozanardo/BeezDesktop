@@ -15,7 +15,7 @@ import asyncio
 import threading
 import hashlib
 
-from beezdesktop.theme import Colors, Font, Spacing, page_header
+from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
 
 
 def _extract_pdf_text(file_path: str) -> str:
@@ -53,6 +53,7 @@ class SmartView:
         self.selected_smart_node = None
         self.smart_nodes = []
         self.workspace_files = []
+        self._busy = False
 
     def build(self) -> toga.Box:
         """Build the smart view."""
@@ -60,9 +61,16 @@ class SmartView:
 
         container.add(page_header("BeezSmart", "Query your documents using AI-powered retrieval"))
 
-        if not self.app.client or not self.app.client.is_wallet_connected():
+        try:
+            if not self.app.client or not self.app.client.is_wallet_connected():
+                container.add(toga.Label(
+                    "Please connect a wallet first.",
+                    style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
+                ))
+                return container
+        except Exception:
             container.add(toga.Label(
-                "Please connect a wallet first.",
+                "Wallet not available.",
                 style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
             ))
             return container
@@ -70,6 +78,10 @@ class SmartView:
         # Smart node selector
         node_section = self._build_node_selector()
         container.add(node_section)
+
+        # Loading indicator
+        self._loading = LoadingIndicator("Loading...")
+        container.add(self._loading.box)
 
         # Query section
         query_section = self._build_query_section()
@@ -87,6 +99,17 @@ class SmartView:
         self._load_smart_nodes()
 
         return container
+
+    def _set_busy(self, busy: bool, message: str = "Loading..."):
+        """Show/hide the loading indicator."""
+        self._busy = busy
+        try:
+            if busy:
+                self._loading.show(message)
+            else:
+                self._loading.hide()
+        except Exception:
+            pass
 
     def _build_node_selector(self) -> toga.Box:
         """Build the smart node selection section."""
@@ -314,6 +337,8 @@ class SmartView:
 
     def _on_query(self, widget):
         """Handle query button press."""
+        if self._busy:
+            return
         query_text = self.query_input.value
         if not query_text or not query_text.strip():
             self.query_status.text = "Please enter a question."
@@ -323,10 +348,10 @@ class SmartView:
             self.query_status.text = "Please select a smart node."
             return
 
-        self.query_status.text = "Processing query..."
         self.query_btn.enabled = False
         self.answer_display.value = ""
         self.sources_label.text = ""
+        self._set_busy(True, "Processing query...")
 
         def do_query():
             try:
@@ -397,6 +422,7 @@ class SmartView:
 
     def _display_result(self, result):
         """Display query result in the UI."""
+        self._set_busy(False)
         self.query_btn.enabled = True
         answer = result.get("answer", "No answer received.")
         self.answer_display.value = answer
@@ -425,6 +451,7 @@ class SmartView:
 
     def _display_error(self, error_msg):
         """Display error message."""
+        self._set_busy(False)
         self.query_btn.enabled = True
         self.query_status.text = f"Error: {error_msg}"
 
@@ -471,7 +498,7 @@ class SmartView:
             return
 
         file_path = str(result)
-        self.workspace_stats_label.text = f"Indexing {file_path}..."
+        self._set_busy(True, f"Indexing {file_path.split('/')[-1].split(chr(92))[-1]}...")
 
         def do_index():
             try:
@@ -543,20 +570,18 @@ class SmartView:
                     print(f"[SMART VIEW] smart_index TX error: {tx_err}", flush=True)
 
                 msg = f"Indexed {file_name}: {chunks} chunks, cost {cost:.2f} BZT{tx_msg}"
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.workspace_stats_label, "text", msg
-                )
-
-                # Refresh workspace
-                self.app.loop.call_soon_threadsafe(
-                    self._refresh_workspace
-                )
+                def on_ok():
+                    self._set_busy(False)
+                    self.workspace_stats_label.text = msg
+                    self._refresh_workspace()
+                self.app.loop.call_soon_threadsafe(on_ok)
 
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.workspace_stats_label, "text",
-                    f"Indexing error: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.workspace_stats_label.text = f"Indexing error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_index, daemon=True).start()
 
@@ -593,8 +618,8 @@ class SmartView:
         except (IndexError, TypeError):
             file_name = file_id[:12]
 
-        self.workspace_stats_label.text = f"Removing {file_name}..."
         self.remove_btn.enabled = False
+        self._set_busy(True, f"Removing {file_name}...")
 
         def do_remove():
             try:
@@ -615,17 +640,18 @@ class SmartView:
                 else:
                     msg = f"Failed to remove {file_name} (not found or unauthorized)."
 
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.workspace_stats_label, "text", msg
-                )
-                # Refresh workspace list
-                self.app.loop.call_soon_threadsafe(self._refresh_workspace)
+                def on_ok():
+                    self._set_busy(False)
+                    self.workspace_stats_label.text = msg
+                    self._refresh_workspace()
+                self.app.loop.call_soon_threadsafe(on_ok)
 
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.workspace_stats_label, "text",
-                    f"Remove error: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.workspace_stats_label.text = f"Remove error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_remove, daemon=True).start()
 

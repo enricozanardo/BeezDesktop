@@ -15,19 +15,27 @@ from toga.style.pack import COLUMN, ROW
 import threading
 import hashlib
 
-from beezdesktop.theme import Colors, Font, Spacing, page_header
+from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
 
 
 _embed_model = None
+_embed_lock = threading.Lock()
 
 
 def _get_embed_model():
     """Lazy-load and cache the fastembed model (heavy on first call)."""
     global _embed_model
-    if _embed_model is None:
-        from fastembed import TextEmbedding
-        _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
-    return _embed_model
+    with _embed_lock:
+        if _embed_model is None:
+            try:
+                from fastembed import TextEmbedding
+                _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
+            except ImportError:
+                raise RuntimeError(
+                    "fastembed is required for knowledge queries. "
+                    "Install with: pip install fastembed"
+                )
+        return _embed_model
 
 
 class KnowledgeView:
@@ -44,39 +52,71 @@ class KnowledgeView:
 
     def build(self) -> toga.Box:
         """Build the knowledge marketplace view."""
+        self._busy = False
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
 
         container.add(page_header("Knowledge Marketplace", "Buy, sell, and query knowledge collections powered by RAG"))
 
-        if not self.app.client or not self.app.client.is_wallet_connected():
+        try:
+            if not self.app.client or not self.app.client.is_wallet_connected():
+                container.add(toga.Label(
+                    "Please connect a wallet first.",
+                    style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
+                ))
+                return container
+        except Exception:
             container.add(toga.Label(
-                "Please connect a wallet first.",
+                "Wallet not available.",
                 style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
             ))
             return container
 
-        # Smart node selector
-        container.add(self._build_node_selector())
+        try:
+            # Smart node selector
+            container.add(self._build_node_selector())
 
-        # Tab row for Browse / Query / Publish / My Listings
-        container.add(self._build_tab_bar())
+            # Tab row for Browse / Query / Publish / My Listings
+            container.add(self._build_tab_bar())
 
-        # Content area (changes based on tab)
-        self.tab_content = toga.Box(style=Pack(direction=COLUMN, flex=1))
-        container.add(self.tab_content)
+            # Loading indicator (shared across all tabs)
+            self._loading = LoadingIndicator("Loading...")
+            container.add(self._loading.box)
 
-        # Status bar
-        self.status_label = toga.Label(
-            "",
-            style=Pack(padding=(5, 0), font_size=10, color="#666666"),
-        )
-        container.add(self.status_label)
+            # Content area (changes based on tab)
+            self.tab_content = toga.Box(style=Pack(direction=COLUMN, flex=1))
+            container.add(self.tab_content)
 
-        # Load smart nodes and show browse tab
-        self._load_smart_nodes()
-        self._show_browse_tab(None)
+            # Status bar
+            self.status_label = toga.Label(
+                "",
+                style=Pack(padding=(5, 0), font_size=10, color="#666666"),
+            )
+            container.add(self.status_label)
+
+            # Load smart nodes and show browse tab (no auto-search)
+            self._load_smart_nodes()
+            self._show_browse_tab(None)
+        except Exception as e:
+            print(f"[KNOWLEDGE] Error building view: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            container.add(toga.Label(
+                f"Error loading Knowledge view: {e}",
+                style=Pack(padding=Spacing.XL, font_size=Font.SIZE_BODY, color=Colors.STATUS_OFFLINE),
+            ))
 
         return container
+
+    def _set_busy(self, busy: bool, message: str = "Loading..."):
+        """Show/hide the loading indicator and disable interaction."""
+        self._busy = busy
+        try:
+            if busy:
+                self._loading.show(message)
+            else:
+                self._loading.hide()
+        except Exception:
+            pass
 
     # === UI Builders ===
 
@@ -127,7 +167,10 @@ class KnowledgeView:
 
     def _show_browse_tab(self, widget):
         """Show the Browse Marketplace tab."""
-        self.tab_content.clear()
+        try:
+            self.tab_content.clear()
+        except Exception:
+            return
         box = toga.Box(style=Pack(direction=COLUMN))
 
         # Search row
@@ -189,12 +232,12 @@ class KnowledgeView:
         box.add(detail_row)
         self.tab_content.add(box)
 
-        # Auto-search
-        self._on_search(None)
-
     def _show_query_tab(self, widget):
         """Show the Query a Listing tab."""
-        self.tab_content.clear()
+        try:
+            self.tab_content.clear()
+        except Exception:
+            return
         box = toga.Box(style=Pack(direction=COLUMN))
 
         # Listing selector
@@ -252,7 +295,10 @@ class KnowledgeView:
 
     def _show_publish_tab(self, widget):
         """Show the Publish Knowledge tab."""
-        self.tab_content.clear()
+        try:
+            self.tab_content.clear()
+        except Exception:
+            return
         box = toga.Box(style=Pack(direction=COLUMN))
 
         box.add(toga.Label("Publish Knowledge Collection", style=Pack(padding=(0, 0, 10, 0), font_weight="bold")))
@@ -339,7 +385,10 @@ class KnowledgeView:
 
     def _show_my_listings_tab(self, widget):
         """Show My Listings management tab."""
-        self.tab_content.clear()
+        try:
+            self.tab_content.clear()
+        except Exception:
+            return
         box = toga.Box(style=Pack(direction=COLUMN))
 
         header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
@@ -432,14 +481,13 @@ class KnowledgeView:
 
     def _on_search(self, widget):
         """Search the marketplace."""
+        if self._busy:
+            return
         if not self.selected_smart_node:
             self.status_label.text = "Select a smart node first."
             return
 
-        self.status_label.text = "Searching..."
-
         # Capture UI values on the main thread BEFORE spawning the worker.
-        # Accessing Toga widgets from a background thread deadlocks on Windows.
         query_text = ""
         tags = None
         try:
@@ -451,16 +499,17 @@ class KnowledgeView:
             pass
 
         smart_url = self._get_smart_url()
+        self._set_busy(True, "Searching marketplace...")
 
         def do_search():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
                 client = KnowledgeMarketplaceClient(smart_url)
-
                 results = client.search_marketplace(query=query_text, tags=tags)
                 self.listings = results
 
                 def update_ui():
+                    self._set_busy(False)
                     data = []
                     self._browse_listing_ids = []
                     for r in results:
@@ -473,14 +522,18 @@ class KnowledgeView:
                             str(r.get("total_queries", 0)),
                         ))
                         self._browse_listing_ids.append(r.get("listing_id", ""))
-                    self.browse_table.data = data
+                    try:
+                        self.browse_table.data = data
+                    except Exception:
+                        pass
                     self.status_label.text = f"Found {len(results)} listings"
 
                 self.app.loop.call_soon_threadsafe(update_ui)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Search error: {e}"
-                )
+                def on_err():
+                    self._set_busy(False)
+                    self.status_label.text = f"Search error: {e}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_search, daemon=True).start()
 
@@ -590,6 +643,8 @@ class KnowledgeView:
 
     def _on_marketplace_query(self, widget):
         """Handle marketplace query button."""
+        if self._busy:
+            return
         query_text = self.query_input.value
         if not query_text or not query_text.strip():
             self.query_cost_label.text = "Please enter a question."
@@ -602,8 +657,8 @@ class KnowledgeView:
             return
 
         self.ask_btn.enabled = False
-        self.query_cost_label.text = "Loading embedding model & processing..."
         self.answer_display.value = ""
+        self._set_busy(True, "Loading embedding model & querying...")
 
         # Capture all UI / state values on the main thread before spawning
         q_text = query_text.strip()
@@ -656,6 +711,7 @@ class KnowledgeView:
                     print(f"[KNOWLEDGE] TX error: {tx_err}", flush=True)
 
                 def update_ui():
+                    self._set_busy(False)
                     self.ask_btn.enabled = True
                     self.answer_display.value = result.get("answer", "No answer.")
                     cost = result.get("cost", 0)
@@ -666,6 +722,7 @@ class KnowledgeView:
             except Exception as e:
                 error_msg = str(e)
                 def show_err():
+                    self._set_busy(False)
                     self.ask_btn.enabled = True
                     self.query_cost_label.text = f"Error: {error_msg}"
                 self.app.loop.call_soon_threadsafe(show_err)
@@ -676,6 +733,8 @@ class KnowledgeView:
 
     def _on_purchase_listing(self, widget):
         """Handle purchase button click."""
+        if self._busy:
+            return
         if self._selected_listing_idx < 0 or self._selected_listing_idx >= len(self.listings):
             self.status_label.text = "Select a listing first."
             return
@@ -694,8 +753,8 @@ class KnowledgeView:
         except Exception:
             pass
 
-        self.status_label.text = f"Purchasing {listing.get('title', 'listing')}..."
         self.buy_listing_btn.enabled = False
+        self._set_busy(True, f"Purchasing {listing.get('title', 'listing')}...")
 
         smart_url = self._get_smart_url()
         wallet = self.app.client.get_current_wallet()
@@ -740,18 +799,18 @@ class KnowledgeView:
                     print(f"[KNOWLEDGE] Purchase TX error: {tx_err}", flush=True)
 
                 msg = f"Purchased! Price: {full_listing.get('purchase_price', 0)} BZT{tx_msg}"
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", msg
-                )
+                def on_ok():
+                    self._set_busy(False)
+                    self.buy_listing_btn.enabled = True
+                    self.status_label.text = msg
+                self.app.loop.call_soon_threadsafe(on_ok)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Purchase error: {e}"
-                )
-            finally:
-                # Re-enable the purchase button so user can retry on error
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.buy_listing_btn, "enabled", True
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.buy_listing_btn.enabled = True
+                    self.status_label.text = f"Purchase error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_purchase, daemon=True).start()
 
@@ -759,12 +818,15 @@ class KnowledgeView:
 
     def _on_refresh_publish_files(self, widget):
         """Refresh the list of indexed files for publishing."""
+        if self._busy:
+            return
         if not self.selected_smart_node:
             return
 
         smart_url = self._get_smart_url()
         wallet = self.app.client.get_current_wallet()
         wallet_address = wallet.address if wallet else None
+        self._set_busy(True, "Loading indexed files...")
 
         def do_refresh():
             try:
@@ -776,6 +838,7 @@ class KnowledgeView:
                 files = stats.get("files", [])
 
                 def update():
+                    self._set_busy(False)
                     data = []
                     self._pub_file_ids = []
                     self._pub_selected_files = set()
@@ -791,9 +854,11 @@ class KnowledgeView:
 
                 self.app.loop.call_soon_threadsafe(update)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Error loading files: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.status_label.text = f"Error loading files: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_refresh, daemon=True).start()
 
@@ -831,6 +896,8 @@ class KnowledgeView:
 
     def _on_publish(self, widget):
         """Handle publish button."""
+        if self._busy:
+            return
         title = self.pub_title.value.strip() if self.pub_title.value else ""
         if not title:
             self.status_label.text = "Title is required."
@@ -842,8 +909,8 @@ class KnowledgeView:
             self.status_label.text = "Select a smart node."
             return
 
-        self.status_label.text = "Publishing..."
         self.publish_btn.enabled = False
+        self._set_busy(True, "Publishing knowledge listing...")
 
         description = self.pub_desc.value.strip() if self.pub_desc.value else ""
         tags = [t.strip() for t in (self.pub_tags.value or "").split(",") if t.strip()]
@@ -913,6 +980,7 @@ class KnowledgeView:
                        f"ID: {listing_id[:12]}...{tx_msg}")
 
                 def done():
+                    self._set_busy(False)
                     self.publish_btn.enabled = True
                     self.status_label.text = msg
                 self.app.loop.call_soon_threadsafe(done)
@@ -920,6 +988,7 @@ class KnowledgeView:
             except Exception as e:
                 error_msg = str(e)
                 def err():
+                    self._set_busy(False)
                     self.publish_btn.enabled = True
                     self.status_label.text = f"Publish error: {error_msg}"
                 self.app.loop.call_soon_threadsafe(err)
@@ -930,12 +999,15 @@ class KnowledgeView:
 
     def _on_refresh_my_listings(self, widget):
         """Refresh the user's own listings."""
+        if self._busy:
+            return
         if not self.selected_smart_node:
             return
 
         smart_url = self._get_smart_url()
         wallet = self.app.client.get_current_wallet()
         wallet_address = wallet.address if wallet else None
+        self._set_busy(True, "Loading your listings...")
 
         def do_refresh():
             try:
@@ -947,6 +1019,7 @@ class KnowledgeView:
                 self.my_listings = results
 
                 def update():
+                    self._set_busy(False)
                     data = []
                     self._my_listing_ids = []
                     for r in results:
@@ -964,9 +1037,11 @@ class KnowledgeView:
 
                 self.app.loop.call_soon_threadsafe(update)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Error: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.status_label.text = f"Error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_refresh, daemon=True).start()
 
@@ -988,6 +1063,8 @@ class KnowledgeView:
 
     def _on_pause_listing(self, widget):
         """Toggle pause/resume on selected listing."""
+        if self._busy:
+            return
         if self._my_selected_idx < 0 or self._my_selected_idx >= len(self.my_listings):
             return
 
@@ -998,49 +1075,57 @@ class KnowledgeView:
         wallet = self.app.client.get_current_wallet()
         wallet_address = wallet.address if wallet else ""
         lid = listing["listing_id"]
+        self._set_busy(True, f"{'Pausing' if new_status == 'paused' else 'Resuming'} listing...")
 
         def do_update():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
                 client = KnowledgeMarketplaceClient(smart_url)
                 client.update_listing(lid, wallet_address, status=new_status)
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text",
-                    f"Listing {new_status}"
-                )
-                self.app.loop.call_soon_threadsafe(self._on_refresh_my_listings, None)
+                def on_ok():
+                    self._set_busy(False)
+                    self.status_label.text = f"Listing {new_status}"
+                    self._on_refresh_my_listings(None)
+                self.app.loop.call_soon_threadsafe(on_ok)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Error: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.status_label.text = f"Error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_update, daemon=True).start()
 
     def _on_unpublish_listing(self, widget):
         """Delete/unpublish selected listing."""
+        if self._busy:
+            return
         if self._my_selected_idx < 0 or self._my_selected_idx >= len(self.my_listings):
             return
 
         listing = self.my_listings[self._my_selected_idx]
-        self.status_label.text = "Unpublishing..."
 
         smart_url = self._get_smart_url()
         wallet = self.app.client.get_current_wallet()
         wallet_address = wallet.address if wallet else ""
         lid = listing["listing_id"]
+        self._set_busy(True, "Unpublishing listing...")
 
         def do_delete():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
                 client = KnowledgeMarketplaceClient(smart_url)
                 client.delete_listing(lid, wallet_address)
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", "Listing unpublished."
-                )
-                self.app.loop.call_soon_threadsafe(self._on_refresh_my_listings, None)
+                def on_ok():
+                    self._set_busy(False)
+                    self.status_label.text = "Listing unpublished."
+                    self._on_refresh_my_listings(None)
+                self.app.loop.call_soon_threadsafe(on_ok)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    setattr, self.status_label, "text", f"Error: {e}"
-                )
+                err_msg = str(e)
+                def on_err():
+                    self._set_busy(False)
+                    self.status_label.text = f"Error: {err_msg}"
+                self.app.loop.call_soon_threadsafe(on_err)
 
         threading.Thread(target=do_delete, daemon=True).start()

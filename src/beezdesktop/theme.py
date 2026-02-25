@@ -372,6 +372,9 @@ def spacer(height: int = Spacing.SECTION_GAP) -> toga.Box:
 class LoadingIndicator:
     """A simple loading indicator that can be shown/hidden.
 
+    Works by adding/removing an inner content row from an outer wrapper box,
+    which is reliable across all Toga backends (GTK, WinForms, Cocoa).
+
     Usage::
 
         loading = LoadingIndicator("Loading transactions...")
@@ -381,12 +384,14 @@ class LoadingIndicator:
     """
 
     def __init__(self, message: str = "Loading..."):
-        self.box = toga.Box(
+        self.box = toga.Box(style=Pack(direction=COLUMN))
+        self._inner = toga.Box(
             style=Pack(
                 direction=ROW,
                 padding=Spacing.MD,
                 alignment="center",
                 background_color=Colors.SURFACE_INFO,
+                height=40,
             )
         )
         self._spinner = toga.Label(
@@ -397,20 +402,26 @@ class LoadingIndicator:
             message,
             style=Pack(font_size=Font.SIZE_BODY, color=Colors.PRIMARY, font_weight="bold"),
         )
-        self.box.add(self._spinner)
-        self.box.add(self._label)
-        self.box.style.visibility = "hidden"
-        self.box.style.height = 0
+        self._inner.add(self._spinner)
+        self._inner.add(self._label)
+        self._visible = False
 
     def show(self, message: str = None):
+        """Show the loading indicator with an optional new message."""
         if message:
             self._label.text = message
-        self.box.style.visibility = "visible"
-        self.box.style.height = 40
+        if not self._visible:
+            self.box.add(self._inner)
+            self._visible = True
 
     def hide(self):
-        self.box.style.visibility = "hidden"
-        self.box.style.height = 0
+        """Hide the loading indicator."""
+        if self._visible:
+            try:
+                self.box.remove(self._inner)
+            except Exception:
+                pass
+            self._visible = False
 
 
 # =============================================================================
