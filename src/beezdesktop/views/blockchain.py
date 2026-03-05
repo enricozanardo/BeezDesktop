@@ -291,24 +291,31 @@ class BlockchainView:
     def _on_block_selected(self, widget):
         """Handle block selection."""
         try:
-            # Check selection safely - may fail if data was refreshed
             selection = widget.selection
             if not selection:
                 return
-            
-            # Get height from selection using repr string (safer than accessing .selection)
-            row_str = repr(selection)
+
             height = None
-            
-            if "height='" in row_str:
+
+            # Prefer direct column access (toga stores data in append order)
+            try:
+                val = selection[0]
+                if val and str(val) not in ("--", "None", ""):
+                    height = str(val)
+            except (TypeError, IndexError, KeyError):
+                pass
+
+            # Fallback: parse from repr string for older toga versions
+            if height is None:
                 import re
+                row_str = repr(selection)
                 match = re.search(r"height='(\d+)'", row_str)
                 if match:
                     height = match.group(1)
-            
-            if height and str(height) != "--":
+
+            if height and str(height) not in ("--", "None", ""):
                 asyncio.create_task(self._show_block_details(str(height)))
-        except (ValueError, AttributeError) as e:
+        except (ValueError, AttributeError):
             # Silently ignore - happens when table data is refreshed during selection
             pass
         except Exception as e:

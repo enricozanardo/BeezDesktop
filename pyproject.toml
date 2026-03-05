@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.3.3"
+version = "0.3.9"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,7 +31,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.3.3"
+version = "0.3.8"
 url = "https://beez.io"
 license.file = "LICENSE"
 author = "Enrico Zanardo"
@@ -75,9 +75,32 @@ system_requires = [
 [tool.briefcase.app.beezdesktop.macOS]
 universal_build = true
 
+# -- Code Signing & Notarization (requires Apple Developer Program, $99/yr) --
+# 1. Enroll at https://developer.apple.com/programs
+# 2. Create a "Developer ID Application" certificate in the Apple Developer portal
+# 3. Install the certificate in your macOS Keychain
+# 4. Uncomment and set the signing_identity below (find it with: security find-identity -v -p codesigning)
+# 5. For notarization, create an App Store Connect API key at:
+#    https://appstoreconnect.apple.com/access/api
+#    Then set these environment variables before running `briefcase package`:
+#      export BRIEFCASE_MACOS_NOTARIZE_ISSUER_ID="your-issuer-uuid"
+#      export BRIEFCASE_MACOS_NOTARIZE_KEY_ID="your-key-id"
+#      export BRIEFCASE_MACOS_NOTARIZE_KEY_FILE="/path/to/AuthKey_XXXX.p8"
+#
+# signing_identity = "Developer ID Application: Enrico Zanardo (TEAM_ID)"
+# notarize_app = true
+
 # Windows-specific configuration
 [tool.briefcase.app.beezdesktop.windows]
 use_full_install_path = false
+
+# -- Code Signing (requires a code signing certificate) --
+# Purchase from DigiCert, Sectigo, or SSL.com (~$200-400/yr for OV, ~$400-600/yr for EV)
+# EV certificates automatically bypass SmartScreen warnings.
+# OV certificates build trust over time with SmartScreen.
+# Install the certificate and uncomment:
+#
+# signing_identity = "Enrico Zanardo"
 
 # Development dependencies
 [tool.briefcase.app.beezdesktop.dev]
