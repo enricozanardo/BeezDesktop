@@ -53,6 +53,8 @@ def safe_async_handler(handler_func, name="unnamed"):
 # Chunk size in bytes (1MB – aligned with BeezClient / pricing_config)
 CHUNK_SIZE = 1024 * 1024  # 1MB
 
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB hard limit per upload
+
 
 class FilesView:
     """File management view with Upload, My Files, Public Files, and Notifications tabs."""
@@ -686,6 +688,19 @@ class FilesView:
                 self.selected_file_path = str(file_path)
                 filename = os.path.basename(self.selected_file_path)
                 self.selected_file_size = os.path.getsize(self.selected_file_path)
+
+                if self.selected_file_size > MAX_FILE_SIZE:
+                    max_mb = MAX_FILE_SIZE // (1024 * 1024)
+                    size_mb = self.selected_file_size / (1024 * 1024)
+                    self.selected_file_path = None
+                    self.selected_file_size = 0
+                    self.selected_file_label.text = (
+                        f"File too large ({size_mb:.1f} MB). "
+                        f"Maximum allowed: {max_mb} MB"
+                    )
+                    self._update_cost_estimate()
+                    return
+
                 num_chunks = self._calculate_num_chunks(self.selected_file_size)
                 
                 self.selected_file_label.text = f"{filename} ({self.selected_file_size:,} bytes, {num_chunks} chunks)"
