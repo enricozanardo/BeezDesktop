@@ -5,17 +5,21 @@ View and edit the .beez network configuration from within the app.
 On first launch, loads bundled defaults. Saves to ~/.beez for persistence.
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 from pathlib import Path
 
 from beezdesktop import __version__
+from beezdesktop.logging_config import get_log_path
 from beezdesktop.theme import (
     Colors, Font, Spacing,
     page_header, card, spacer,
     primary_button, secondary_button, danger_button,
 )
+
+logger = logging.getLogger("beezdesktop.settings")
 
 
 class SettingsView:
@@ -31,7 +35,7 @@ class SettingsView:
             from shared.beez_config import get_config
             self._config = get_config()
         except Exception as e:
-            print(f"[SETTINGS] Could not load config: {e}", flush=True)
+            logger.info(f"[SETTINGS] Could not load config: {e}")
 
     def build(self) -> toga.Box:
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
@@ -79,6 +83,28 @@ class SettingsView:
         self.rate_limit_input = self._field(sec_card, "Rate Limit",
             str(self._config.security.rate_limit) if self._config else "1000")
         container.add(sec_card)
+        container.add(spacer(Spacing.SM))
+
+        # Logs section
+        log_card = card(title="Application Logs", bg=Colors.BG_CARD)
+        log_path = str(get_log_path())
+        log_path_row = toga.Box(style=Pack(direction=ROW, padding=Spacing.XS, alignment="center"))
+        log_path_row.add(toga.Label(
+            "Log file",
+            style=Pack(width=260, font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY),
+        ))
+        log_path_row.add(toga.Label(
+            log_path,
+            style=Pack(flex=1, font_size=Font.SIZE_CAPTION, color=Colors.TEXT_MUTED),
+        ))
+        log_card.add(log_path_row)
+
+        open_log_btn_row = toga.Box(style=Pack(direction=ROW, padding=(Spacing.SM, Spacing.XS)))
+        open_log_btn_row.add(secondary_button("Open Log File", self._on_open_log))
+        open_log_btn_row.add(toga.Box(style=Pack(width=Spacing.SM)))
+        open_log_btn_row.add(secondary_button("Open Log Folder", self._on_open_log_folder))
+        log_card.add(open_log_btn_row)
+        container.add(log_card)
         container.add(spacer(Spacing.MD))
 
         # Action buttons
@@ -152,6 +178,38 @@ class SettingsView:
             self.status_label.text = f"Saved to {path}. Restart app for network changes."
         except Exception as e:
             self.status_label.text = f"Error: {e}"
+
+    def _on_open_log(self, widget):
+        """Open the log file with the system default text editor."""
+        import subprocess, sys
+        log_path = get_log_path()
+        if not log_path.exists():
+            self.status_label.text = "Log file does not exist yet."
+            return
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(log_path)])
+            elif sys.platform == "win32":
+                subprocess.Popen(["notepad", str(log_path)])
+            else:
+                subprocess.Popen(["xdg-open", str(log_path)])
+        except Exception as e:
+            self.status_label.text = f"Could not open log: {e}"
+
+    def _on_open_log_folder(self, widget):
+        """Open the log folder in the system file manager."""
+        import subprocess, sys
+        log_dir = get_log_path().parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(log_dir)])
+            elif sys.platform == "win32":
+                subprocess.Popen(["explorer", str(log_dir)])
+            else:
+                subprocess.Popen(["xdg-open", str(log_dir)])
+        except Exception as e:
+            self.status_label.text = f"Could not open folder: {e}"
 
     def _on_reset(self, widget):
         try:

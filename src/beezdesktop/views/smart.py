@@ -8,6 +8,7 @@ Provides a UI for interacting with BeezSmart nodes:
 - Smart node selection and pricing display
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -16,6 +17,8 @@ import threading
 import hashlib
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+
+logger = logging.getLogger("beezdesktop.smart")
 
 
 def _extract_pdf_text(file_path: str) -> str:
@@ -314,7 +317,7 @@ class SmartView:
             else:
                 self.node_select.items = ["No smart nodes available"]
         except Exception as e:
-            print(f"[SMART VIEW] Error loading nodes: {e}", flush=True)
+            logger.error(f"[SMART VIEW] Error loading nodes: {e}")
             import traceback; traceback.print_exc()
             self.node_select.items = ["Error loading nodes"]
 
@@ -404,9 +407,9 @@ class SmartView:
                     if status == 200:
                         result["tx_hash"] = tx["tx_hash"]
                     else:
-                        print(f"[SMART VIEW] smart_query TX failed: {resp}", flush=True)
+                        logger.error(f"[SMART VIEW] smart_query TX failed: {resp}")
                 except Exception as tx_err:
-                    print(f"[SMART VIEW] smart_query TX error: {tx_err}", flush=True)
+                    logger.error(f"[SMART VIEW] smart_query TX error: {tx_err}")
 
                 # Update UI on main thread
                 self.app.loop.call_soon_threadsafe(
@@ -567,7 +570,7 @@ class SmartView:
                         tx_msg = f" | TX failed: {resp.get('error', 'unknown')}"
                 except Exception as tx_err:
                     tx_msg = f" | TX error: {tx_err}"
-                    print(f"[SMART VIEW] smart_index TX error: {tx_err}", flush=True)
+                    logger.error(f"[SMART VIEW] smart_index TX error: {tx_err}")
 
                 msg = f"Indexed {file_name}: {chunks} chunks, cost {cost:.2f} BZT{tx_msg}"
                 def on_ok():

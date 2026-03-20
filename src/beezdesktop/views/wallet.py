@@ -5,6 +5,7 @@ Wallet management: create, connect, import/export, view balance.
 Redesigned with card-based layout and consistent theming.
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -19,6 +20,8 @@ from beezdesktop.theme import (
     status_badge,
 )
 
+logger = logging.getLogger("beezdesktop.wallet")
+
 
 def _safe_async(handler, name="unnamed"):
     """Wrap an async handler for Toga button press."""
@@ -27,7 +30,7 @@ def _safe_async(handler, name="unnamed"):
             try:
                 await handler(widget)
             except Exception as e:
-                print(f"[WALLET] Handler '{name}' error: {e}", flush=True)
+                logger.error("[WALLET] Handler '%s' error: %s", name, e)
                 import traceback
                 traceback.print_exc()
         asyncio.create_task(_inner())

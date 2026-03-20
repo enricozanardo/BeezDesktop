@@ -5,12 +5,15 @@ Blockchain explorer: view blocks, transactions, wallet lookup.
 Similar to BeezFE's BlockchainPage with drill-down capabilities.
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 import asyncio
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header
+
+logger = logging.getLogger("beezdesktop.blockchain")
 
 
 class BlockchainView:
@@ -75,7 +78,7 @@ class BlockchainView:
                     if self.current_offset == 0:
                         await self._load_blocks()
                 except Exception as e:
-                    print(f"[BLOCKCHAIN] Auto-refresh error: {e}", flush=True)
+                    logger.error("[BLOCKCHAIN] Auto-refresh error: %s", e)
         except asyncio.CancelledError:
             pass  # Task cancelled on view switch -- expected
     
@@ -228,7 +231,7 @@ class BlockchainView:
             self.info_labels["mempool_size"].text = str(blockchain.get("mempool_size", "--"))
             self.info_labels["total_wallets"].text = str(blockchain.get("total_wallets", "--"))
         else:
-            print(f"[BLOCKCHAIN] Info error: {result.get('error', 'Unknown')}", flush=True)
+            logger.error("[BLOCKCHAIN] Info error: %s", result.get('error', 'Unknown'))
     
     async def _load_blocks(self):
         """Load blocks from API."""
@@ -274,7 +277,7 @@ class BlockchainView:
             self.page_label.text = f"Page {page_num}"
         else:
             error = result.get('error', 'Unknown')
-            print(f"[BLOCKCHAIN] Blocks error: {error}", flush=True)
+            logger.error("[BLOCKCHAIN] Blocks error: %s", error)
             self.blocks_table.data.append(["--", f"Error: {error[:30]}", "--", "--"])
     
     def _on_prev_page(self, widget):
@@ -319,7 +322,7 @@ class BlockchainView:
             # Silently ignore - happens when table data is refreshed during selection
             pass
         except Exception as e:
-            print(f"[BLOCKCHAIN] Selection error: {e}", flush=True)
+            logger.error("[BLOCKCHAIN] Selection error: %s", e)
     
     def _truncate_hash(self, hash_str: str, length: int = 16) -> str:
         """Truncate hash for display."""

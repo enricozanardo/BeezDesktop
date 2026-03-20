@@ -8,6 +8,7 @@ Split into four tabs: Upload, My Files, Public Files, and Notifications.
 Text selection is enabled in detail panels using SelectableLabel/SelectableText components.
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -17,6 +18,8 @@ import uuid
 from datetime import datetime, timedelta
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+
+logger = logging.getLogger("beezdesktop.files")
 
 # Import selectable components for text selection support
 # Disabled temporarily to debug button issues
@@ -31,7 +34,7 @@ def safe_create_task(coro, name="unnamed"):
         try:
             await coro
         except Exception as e:
-            print(f"[FILES] Task '{name}' error: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Task '{name}' error: {e}")
             import traceback
             traceback.print_exc()
     return asyncio.create_task(wrapper())
@@ -44,7 +47,7 @@ def safe_async_handler(handler_func, name="unnamed"):
             try:
                 await handler_func(widget)
             except Exception as e:
-                print(f"[FILES] Handler '{name}' error: {e}", flush=True)
+                logger.error(f"[FILES][FILES] Handler '{name}' error: {e}")
                 import traceback
                 traceback.print_exc()
         asyncio.create_task(inner())
@@ -153,18 +156,18 @@ class FilesView:
         container.add(self._tab_container)
         
         # Build all sections
-        print("[FILES] Building sections...", flush=True)
+        logger.debug("[FILES] Building sections...")
         try:
             self._upload_section = self._build_upload_section()
-            print("[FILES] Upload section built", flush=True)
+            logger.debug("[FILES] Upload section built")
             self._files_section = self._build_files_section()
-            print("[FILES] Files section built", flush=True)
+            logger.debug("[FILES] Files section built")
             self._public_section = self._build_public_section()
-            print("[FILES] Public section built", flush=True)
+            logger.debug("[FILES] Public section built")
             self._notifications_section = self._build_notifications_section()
-            print("[FILES] Notifications section built", flush=True)
+            logger.debug("[FILES] Notifications section built")
         except Exception as e:
-            print(f"[FILES] ERROR building sections: {e}", flush=True)
+            logger.error(f"[FILES][FILES] ERROR building sections: {e}")
             import traceback
             traceback.print_exc()
         
@@ -174,7 +177,7 @@ class FilesView:
         # Fetch location in background (with error handling)
         safe_create_task(self._fetch_location(), "fetch_location")
         
-        print("[FILES] View built successfully", flush=True)
+        logger.debug("[FILES] View built successfully")
         return container
 
     def _set_busy(self, busy: bool, message: str = "Loading..."):
@@ -212,7 +215,7 @@ class FilesView:
     
     def _show_files_tab(self, widget):
         """Switch to files tab."""
-        print("[FILES] Switching to My Files tab", flush=True)
+        logger.debug("[FILES] Switching to My Files tab")
         self._tab_container.clear()
         self._tab_container.add(self._files_section)
         self._current_tab = "files"
@@ -221,7 +224,7 @@ class FilesView:
     
     def _show_public_tab(self, widget):
         """Switch to public files tab."""
-        print("[FILES] Switching to Public Files tab", flush=True)
+        logger.debug("[FILES] Switching to Public Files tab")
         self._tab_container.clear()
         self._tab_container.add(self._public_section)
         self._current_tab = "public"
@@ -230,7 +233,7 @@ class FilesView:
     
     def _show_notifications_tab(self, widget):
         """Switch to notifications tab."""
-        print("[FILES] Switching to Notifications tab", flush=True)
+        logger.debug("[FILES] Switching to Notifications tab")
         self._tab_container.clear()
         self._tab_container.add(self._notifications_section)
         self._current_tab = "notifications"
@@ -252,9 +255,9 @@ class FilesView:
                 else:
                     self._location_label.text = f"Location: {location.city}, {location.country}"
             
-            print(f"[FILES] User location: {location.lat}, {location.lon}", flush=True)
+            logger.info(f"[FILES][FILES] User location: {location.lat}, {location.lon}")
         except Exception as e:
-            print(f"[FILES] Failed to get location: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Failed to get location: {e}")
             if self._location_label:
                 self._location_label.text = "Location: Unknown"
     
@@ -675,7 +678,7 @@ class FilesView:
     
     async def _on_select_file(self, widget):
         """Handle file selection."""
-        print("[FILES] Select File button pressed", flush=True)
+        logger.debug("[FILES] Select File button pressed")
         try:
             file_path = await self.app.main_window.dialog(
                 toga.OpenFileDialog(
@@ -712,34 +715,34 @@ class FilesView:
                 self._update_cost_estimate()
                 
         except Exception as e:
-            print(f"[FILES] Error selecting file: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error selecting file: {e}")
             self.selected_file_label.text = f"Error: {e}"
     
     async def _on_upload_file(self, widget):
         """Handle file upload with all options."""
-        print("[FILES] Upload button pressed", flush=True)
+        logger.debug("[FILES] Upload button pressed")
         
         if not self.selected_file_path:
-            print("[FILES] No file selected", flush=True)
+            logger.warning("[FILES] No file selected")
             await self.app.main_window.dialog(
                 toga.InfoDialog("Select File", "Please select a file first.")
             )
             return
         
-        print(f"[FILES] Selected file: {self.selected_file_path}", flush=True)
+        logger.info(f"[FILES][FILES] Selected file: {self.selected_file_path}")
         
         storage_nodes = self._get_storage_nodes()
-        print(f"[FILES] Storage nodes: {len(storage_nodes) if storage_nodes else 0}", flush=True)
+        logger.info(f"[FILES][FILES] Storage nodes: {len(storage_nodes) if storage_nodes else 0}")
         
         if not self.app.client:
-            print("[FILES] No client available", flush=True)
+            logger.warning("[FILES] No client available")
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", "Client not available.")
             )
             return
         
         if not storage_nodes:
-            print("[FILES] No storage nodes available", flush=True)
+            logger.warning("[FILES] No storage nodes available")
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", "No storage nodes available.")
             )
@@ -802,10 +805,10 @@ class FilesView:
         )
         
         if not confirm:
-            print("[FILES] Upload cancelled by user", flush=True)
+            logger.warning("[FILES] Upload cancelled by user")
             return
         
-        print("[FILES] Starting upload...", flush=True)
+        logger.info("[FILES] Starting upload...")
         self.upload_status.text = f"Uploading {num_chunks} chunk(s)... please wait"
         self._set_busy(True, f"Uploading {file_name}...")
         
@@ -816,15 +819,15 @@ class FilesView:
             loop = asyncio.get_event_loop()
             
             file_id = str(uuid.uuid4())
-            print(f"[FILES] Generated file_id: {file_id}", flush=True)
+            logger.info(f"[FILES][FILES] Generated file_id: {file_id}")
             
             wallet = self.app.client.get_current_wallet()
             if not wallet:
-                print("[FILES] No wallet connected", flush=True)
+                logger.warning("[FILES] No wallet connected")
                 raise Exception("No wallet connected")
             
-            print(f"[FILES] Wallet: {wallet.address}", flush=True)
-            print(f"[FILES] Creating upload transaction (this may take a while)...", flush=True)
+            logger.info(f"[FILES][FILES] Wallet: {wallet.address}")
+            logger.debug(f"[FILES][FILES] Creating upload transaction (this may take a while)...")
             
             # Run in executor to avoid blocking
             result, status = await loop.run_in_executor(
@@ -846,11 +849,11 @@ class FilesView:
                 )
             )
             
-            print(f"[FILES] Upload result: status={status}, result={result}", flush=True)
+            logger.info(f"[FILES][FILES] Upload result: status={status}, result={result}")
             
             if status in (200, 201):
                 if upload_tags:
-                    print(f"[FILES] Tags included in TX: {upload_tags}", flush=True)
+                    logger.info(f"[FILES][FILES] Tags included in TX: {upload_tags}")
                 
                 self.upload_status.text = f"✓ Uploaded: {file_name}"
                 await self.app.main_window.dialog(
@@ -893,7 +896,7 @@ class FilesView:
             
         except Exception as e:
             self._set_busy(False)
-            print(f"[FILES] Upload error: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Upload error: {e}")
             import traceback
             traceback.print_exc()
             try:
@@ -1042,12 +1045,12 @@ class FilesView:
     
     def _on_refresh_files(self, widget):
         """Refresh the files list."""
-        print("[FILES] Refresh button pressed", flush=True)
+        logger.debug("[FILES] Refresh button pressed")
         safe_create_task(self._load_files_async(), "refresh_files")
     
     async def _on_test_api(self, widget):
         """Test API connection and show diagnostic info."""
-        print("[FILES] Test API button pressed", flush=True)
+        logger.debug("[FILES] Test API button pressed")
         if not self.app.client:
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", "Client not available")
@@ -1274,7 +1277,7 @@ class FilesView:
                         )
                         return
                     except Exception as pe:
-                        print(f"[FILES] Error displaying preview image: {pe}", flush=True)
+                        logger.error(f"[FILES][FILES] Error displaying preview image: {pe}")
             
             await self.app.main_window.dialog(
                 toga.InfoDialog(
@@ -1692,7 +1695,7 @@ class FilesView:
                         )
                         return
         except Exception as e:
-            print(f"[FILES] Error checking pending transfers: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error checking pending transfers: {e}")
         
         # Show transfer dialog
         await self._show_transfer_dialog(file_id, file_name, current_price)
@@ -2171,36 +2174,36 @@ class FilesView:
             return self._my_files_data[0] if self._my_files_data else None
             
         except Exception as e:
-            print(f"[FILES] Error getting selected file: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error getting selected file: {e}")
             return self._my_files_data[0] if self._my_files_data else None
     
     async def _load_files_async(self):
         """Load files from blockchain asynchronously."""
         self._set_busy(True, "Loading your files...")
         if not self.app.client or not self.files_table:
-            print("[FILES] Client or table not available", flush=True)
+            logger.warning("[FILES] Client or table not available")
             self._set_busy(False)
             return
         
         if not self.app.client.is_wallet_connected():
-            print("[FILES] Wallet not connected", flush=True)
+            logger.info("[FILES] Wallet not connected")
             self._set_busy(False)
             return
         
         # Check if chain nodes are available
         chain_nodes = self.app.client.get_chain_nodes()
         if not chain_nodes:
-            print("[FILES] No chain nodes available, waiting...", flush=True)
+            logger.warning("[FILES] No chain nodes available, waiting...")
             # Wait for consensus to provide chain nodes
             for _ in range(5):  # Wait up to 5 seconds
                 await asyncio.sleep(1)
                 chain_nodes = self.app.client.get_chain_nodes()
                 if chain_nodes:
-                    print(f"[FILES] Chain nodes now available: {len(chain_nodes)}", flush=True)
+                    logger.info(f"[FILES][FILES] Chain nodes now available: {len(chain_nodes)}")
                     break
             
             if not chain_nodes:
-                print("[FILES] Still no chain nodes after waiting", flush=True)
+                logger.warning("[FILES] Still no chain nodes after waiting")
                 self._set_busy(False)
                 self.files_table.data.clear()
                 self.files_table.data.append([
@@ -2210,15 +2213,15 @@ class FilesView:
         
         try:
             wallet = self.app.client.get_current_wallet()
-            print(f"[FILES] Loading files for wallet: {wallet.address if wallet else 'None'}", flush=True)
-            print(f"[FILES] Using {len(chain_nodes)} chain nodes", flush=True)
+            logger.info(f"[FILES][FILES] Loading files for wallet: {wallet.address if wallet else 'None'}")
+            logger.info(f"[FILES][FILES] Using {len(chain_nodes)} chain nodes")
             
             loop = asyncio.get_event_loop()
             uploads = await loop.run_in_executor(
                 None, self.app.client.get_user_uploads
             )
             
-            print(f"[FILES] Got {len(uploads) if uploads else 0} uploads from API", flush=True)
+            logger.info(f"[FILES][FILES] Got {len(uploads) if uploads else 0} uploads from API")
             
             self._my_files_data = uploads or []
             self.files_table.data.clear()
@@ -2228,7 +2231,7 @@ class FilesView:
                 self.files_table.data.append([
                     "No files", f"Wallet: {wallet_addr[:20]}...", "--", "--", "--", "--", "Upload a file first"
                 ])
-                print(f"[FILES] No uploads found for wallet {wallet_addr}", flush=True)
+                logger.info(f"[FILES][FILES] No uploads found for wallet {wallet_addr}")
                 return
             
             # Fetch pending transfer info to mark files with active transfers
@@ -2245,7 +2248,7 @@ class FilesView:
                         if req.get("status") == "pending":
                             pending_file_ids.add(req.get("file_id"))
             except Exception as pe:
-                print(f"[FILES] Error fetching pending transfers: {pe}", flush=True)
+                logger.error(f"[FILES][FILES] Error fetching pending transfers: {pe}")
             
             for upload in uploads:
                 if upload is None:
@@ -2292,7 +2295,7 @@ class FilesView:
                 ])
                 
         except Exception as e:
-            print(f"[FILES] Error loading files: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error loading files: {e}")
             import traceback
             traceback.print_exc()
             if self.files_table:
@@ -2433,12 +2436,12 @@ class FilesView:
     
     def _on_search_public(self, widget):
         """Search public files."""
-        print("[FILES] Search public files", flush=True)
+        logger.debug("[FILES] Search public files")
         safe_create_task(self._load_public_files_async(), "search_public")
     
     def _on_refresh_public(self, widget):
         """Refresh public files."""
-        print("[FILES] Refresh public files", flush=True)
+        logger.debug("[FILES] Refresh public files")
         safe_create_task(self._load_public_files_async(), "refresh_public")
     
     def _on_public_file_selected(self, widget):
@@ -2566,7 +2569,7 @@ class FilesView:
                         )
                         return
                     except Exception as pe:
-                        print(f"[FILES] Error displaying marketplace preview: {pe}", flush=True)
+                        logger.error(f"[FILES][FILES] Error displaying marketplace preview: {pe}")
 
             await self.app.main_window.dialog(
                 toga.InfoDialog(
@@ -2815,7 +2818,7 @@ class FilesView:
                 ])
 
         except Exception as e:
-            print(f"[FILES] Error loading public files: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error loading public files: {e}")
             self._public_files_data = []
     
     # =========================================================================
@@ -2928,7 +2931,7 @@ class FilesView:
     
     def _on_refresh_notifications(self, widget):
         """Refresh notifications."""
-        print("[FILES] Refresh notifications", flush=True)
+        logger.debug("[FILES] Refresh notifications")
         safe_create_task(self._load_notifications_async(), "refresh_notifications")
     
     def _on_incoming_selected(self, widget):
@@ -2971,7 +2974,7 @@ class FilesView:
                     )
                 )
         except Exception as e:
-            print(f"[FILES] Preview load error: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Preview load error: {e}")
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", f"Failed to load preview: {e}")
             )
@@ -3087,7 +3090,7 @@ class FilesView:
                     preview_bytes = base64.b64decode(preview_b64)
                     return toga.Image(src=preview_bytes)
         except Exception as e:
-            print(f"[FILES] Error fetching preview: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error fetching preview: {e}")
         
         return None
     
@@ -3147,7 +3150,7 @@ class FilesView:
                         )
                         return
             except Exception as e:
-                print(f"[FILES] Balance check error: {e}", flush=True)
+                logger.error(f"[FILES][FILES] Balance check error: {e}")
 
         if i_am_seller:
             confirm_msg = (
@@ -3385,5 +3388,5 @@ class FilesView:
                 self._notifications_status.text = "Failed to load notifications"
                 
         except Exception as e:
-            print(f"[FILES] Error loading notifications: {e}", flush=True)
+            logger.error(f"[FILES][FILES] Error loading notifications: {e}")
             self._notifications_status.text = f"Error: {e}"

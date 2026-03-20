@@ -6,6 +6,7 @@ Native desktop client for the Beez Network.
 
 import sys
 import os
+import logging
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
 
@@ -13,11 +14,15 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 
+from beezdesktop.logging_config import setup_logging, get_log_path
+
+logger = setup_logging()
+
 try:
     from shared.client_core import BeezClientCore, ClientState, Wallet
     from shared.client_core.zmq import start_consensus_listener
 except ImportError as e:
-    print(f"Warning: Could not import shared.client_core: {e}")
+    logger.warning("Could not import shared.client_core: %s", e)
     BeezClientCore = None
     ClientState = None
 
@@ -37,6 +42,8 @@ class BeezDesktopApp(toga.App):
 
     def startup(self):
         """Initialize the application UI."""
+        logger.info("BeezDesktop v%s starting up", __version__)
+        logger.info("Log file: %s", get_log_path())
         self.main_window = toga.MainWindow(
             title=f"{self.formal_name} v{__version__}",
             size=(1200, 780),
@@ -247,9 +254,9 @@ class BeezDesktopApp(toga.App):
             from shared.beez_config import get_config
             config = get_config()
             nodes = config.network.directory_nodes
-            print(f"[APP] Config loaded: {len(nodes)} directory nodes", flush=True)
+            logger.info("Config loaded: %d directory nodes", len(nodes))
         except Exception as e:
-            print(f"[APP] Config init error: {e}", flush=True)
+            logger.error("Config init error: %s", e)
 
     def _start_background_services(self):
         """Start background services like consensus listener."""
@@ -258,12 +265,12 @@ class BeezDesktopApp(toga.App):
                 def on_consensus(data):
                     storage = len(self.state.active_nodes)
                     chain = len(self.state.chain_nodes)
-                    print(f"[CONSENSUS] \u2713 {storage} storage, {chain} chain nodes", flush=True)
+                    logger.debug("Consensus update: %d storage, %d chain nodes", storage, chain)
 
                 start_consensus_listener(state=self.state, callback=on_consensus)
-                print("[APP] Consensus listener started", flush=True)
+                logger.info("Consensus listener started")
             except Exception as e:
-                print(f"[APP] Could not start consensus: {e}", flush=True)
+                logger.error("Could not start consensus: %s", e)
 
     def update_wallet_status(self):
         """Update the wallet status display in sidebar."""
@@ -287,9 +294,9 @@ class BeezDesktopApp(toga.App):
                 if wallet_data:
                     self.client.connect_wallet(wallet_data['mnemonic'])
                     self.update_wallet_status()
-                    print(f"[APP] Auto-loaded wallet: {wallet_data.get('address', '')[:16]}...", flush=True)
+                    logger.info("Auto-loaded wallet: %s...", wallet_data.get('address', '')[:16])
         except Exception as e:
-            print(f"[APP] Could not auto-load wallet: {e}", flush=True)
+            logger.error("Could not auto-load wallet: %s", e)
 
 
 def main():

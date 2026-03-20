@@ -7,9 +7,12 @@ Provides custom widgets for the application:
 - CopyableLabel: Label with a copy button
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
+
+logger = logging.getLogger("beezdesktop.widgets")
 
 
 class SelectableLabel(toga.Box):
@@ -229,7 +232,7 @@ class CopyableLabel(toga.Box):
                 await asyncio.sleep(1)
                 self._copy_btn.text = "📋"
         except Exception as e:
-            print(f"Copy failed: {e}", flush=True)
+            logger.error("Copy failed: %s", e)
 
 
 class InfoRow(toga.Box):

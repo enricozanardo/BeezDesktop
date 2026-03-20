@@ -9,6 +9,7 @@ Provides a UI for the knowledge marketplace:
 - Purchase full ownership of a listing
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -16,6 +17,8 @@ import threading
 import hashlib
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+
+logger = logging.getLogger("beezdesktop.knowledge")
 
 
 _embed_model = None
@@ -97,7 +100,7 @@ class KnowledgeView:
             self._load_smart_nodes()
             self._show_browse_tab(None)
         except Exception as e:
-            print(f"[KNOWLEDGE] Error building view: {e}", flush=True)
+            logger.error(f"[KNOWLEDGE] Error building view: {e}")
             import traceback
             traceback.print_exc()
             container.add(toga.Label(
@@ -453,7 +456,7 @@ class KnowledgeView:
             else:
                 self.node_select.items = ["No smart nodes available"]
         except Exception as e:
-            print(f"[KNOWLEDGE] Error loading nodes: {e}", flush=True)
+            logger.error(f"[KNOWLEDGE] Error loading nodes: {e}")
             self.node_select.items = ["Error loading nodes"]
 
     def _on_node_selected(self, widget):
@@ -563,7 +566,7 @@ class KnowledgeView:
                     pass
 
             if matched_idx < 0 or matched_idx >= len(self.listings):
-                print(f"[KNOWLEDGE] Browse select: no match (selection={selection})", flush=True)
+                logger.warning(f"[KNOWLEDGE] Browse select: no match (selection={selection})")
                 return
 
             self._selected_listing_idx = matched_idx
@@ -587,12 +590,12 @@ class KnowledgeView:
             except Exception:
                 pass
             self.buy_listing_btn.enabled = pp > 0 and not is_own
-            print(f"[KNOWLEDGE] Selected listing idx={matched_idx} "
-                  f"title={listing.get('title', '?')!r} purchase_price={pp} "
-                  f"own={is_own}", flush=True)
+            logger.info(f"[KNOWLEDGE] Selected listing idx={matched_idx} "
+                       f"title={listing.get('title', '?')!r} purchase_price={pp} "
+                       f"own={is_own}")
 
         except Exception as e:
-            print(f"[KNOWLEDGE] Browse select error: {e}", flush=True)
+            logger.error(f"[KNOWLEDGE] Browse select error: {e}")
             import traceback; traceback.print_exc()
 
     def _on_query_listing_from_browse(self, widget):
@@ -708,7 +711,7 @@ class KnowledgeView:
                     else:
                         tx_msg = f" | TX failed"
                 except Exception as tx_err:
-                    print(f"[KNOWLEDGE] TX error: {tx_err}", flush=True)
+                    logger.error(f"[KNOWLEDGE] TX error: {tx_err}")
 
                 def update_ui():
                     self._set_busy(False)
@@ -796,7 +799,7 @@ class KnowledgeView:
                     if status == 200:
                         tx_msg = f" | TX: {tx['tx_hash'][:12]}..."
                 except Exception as tx_err:
-                    print(f"[KNOWLEDGE] Purchase TX error: {tx_err}", flush=True)
+                    logger.error(f"[KNOWLEDGE] Purchase TX error: {tx_err}")
 
                 msg = f"Purchased! Price: {full_listing.get('purchase_price', 0)} BZT{tx_msg}"
                 def on_ok():
@@ -974,7 +977,7 @@ class KnowledgeView:
                     if status == 200:
                         tx_msg = f" | TX: {tx['tx_hash'][:12]}..."
                 except Exception as tx_err:
-                    print(f"[KNOWLEDGE] Publish TX error: {tx_err}", flush=True)
+                    logger.error(f"[KNOWLEDGE] Publish TX error: {tx_err}")
 
                 msg = (f"Published! {total_files} files, {total_chunks} chunks, "
                        f"ID: {listing_id[:12]}...{tx_msg}")

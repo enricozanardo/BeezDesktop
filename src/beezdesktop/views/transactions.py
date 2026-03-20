@@ -5,6 +5,7 @@ Transaction management: send BZT, view history.
 Uses SearchableTable and LoadingIndicator for better UX.
 """
 
+import logging
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -16,6 +17,8 @@ from beezdesktop.theme import (
     primary_button, secondary_button,
     SearchableTable, LoadingIndicator,
 )
+
+logger = logging.getLogger("beezdesktop.transactions")
 
 
 class TransactionsView:
@@ -188,7 +191,7 @@ class TransactionsView:
 
             self._history_table.set_data(rows)
         except Exception as e:
-            print(f"[TX] History exception: {e}", flush=True)
+            logger.info(f"[TX] History exception: {e}")
         finally:
             self._loading.hide()
 

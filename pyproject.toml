@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.3.9"
+version = "0.3.14"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -31,7 +31,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.3.8"
+version = "0.3.14"
 url = "https://beez.io"
 license.file = "LICENSE"
 author = "Enrico Zanardo"
