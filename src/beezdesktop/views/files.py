@@ -50,8 +50,8 @@ def safe_async_handler(handler_func, name="unnamed"):
         asyncio.create_task(inner())
     return wrapper
 
-# Chunk size in bytes (100KB as per initial_doc.txt)
-CHUNK_SIZE = 100 * 1024  # 100KB
+# Chunk size in bytes (1MB – aligned with BeezClient / pricing_config)
+CHUNK_SIZE = 1024 * 1024  # 1MB
 
 
 class FilesView:
@@ -501,7 +501,7 @@ class FilesView:
         return result if result else ["default"]
     
     def _calculate_num_chunks(self, file_size: int) -> int:
-        """Calculate number of chunks for a file (100KB chunks)."""
+        """Calculate number of chunks for a file (1MB chunks)."""
         if file_size <= 0:
             return 0
         return (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
