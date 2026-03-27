@@ -16,6 +16,7 @@ from toga.style.pack import COLUMN, ROW
 import threading
 import hashlib
 
+from shared.client_core.encryption import derive_encryption_key
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
 
 logger = logging.getLogger("beezdesktop.knowledge")
@@ -929,7 +930,7 @@ class KnowledgeView:
         file_ids = list(self._pub_selected_files)
 
         wallet = self.app.client.get_current_wallet()
-        marketplace_key = hashlib.sha256(wallet.privkey).digest()
+        marketplace_key = derive_encryption_key(wallet)
         smart_url = self._get_smart_url()
         smart_node_id = self.selected_smart_node.get("node_id", "")
         wallet_address = wallet.address

@@ -16,6 +16,7 @@ import asyncio
 import threading
 import hashlib
 
+from shared.client_core.encryption import derive_encryption_key
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
 
 logger = logging.getLogger("beezdesktop.smart")
@@ -367,9 +368,8 @@ class SmartView:
 
                 client = SmartNodeClient(smart_url)
 
-                # Get decryption key from wallet private key
                 wallet = self.app.client.get_current_wallet()
-                key = hashlib.sha256(wallet.privkey).digest()
+                key = derive_encryption_key(wallet)
 
                 top_k = int(self.top_k_select.value or "5")
 
@@ -531,7 +531,7 @@ class SmartView:
                 client = SmartNodeClient(smart_url)
 
                 wallet = self.app.client.get_current_wallet()
-                key = hashlib.sha256(wallet.privkey).digest()
+                key = derive_encryption_key(wallet)
 
                 file_id = str(_uuid.uuid4())
                 file_name = file_path.split("/")[-1].split("\\")[-1]

@@ -9,4 +9,4 @@ This application provides a native GUI for:
 - Network status monitoring
 """
 
-__version__ = "0.3.14"
+__version__ = "0.4.0"
