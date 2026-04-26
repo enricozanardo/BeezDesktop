@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.3.14"
+version = "0.5.0"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,6 +24,14 @@ dependencies = [
     "pymupdf>=1.24.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.3",
+    "toga-core>=0.4.0",
+    "toga-dummy>=0.4.0",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
@@ -31,7 +39,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.3.14"
+version = "0.5.0"
 url = "https://beez.io"
 license.file = "LICENSE"
 author = "Enrico Zanardo"

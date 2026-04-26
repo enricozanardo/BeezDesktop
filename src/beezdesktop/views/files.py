@@ -21,11 +21,17 @@ from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicat
 
 logger = logging.getLogger("beezdesktop.files")
 
-# Import selectable components for text selection support
-# Disabled temporarily to debug button issues
-SelectableLabel = None
-SelectableText = None
-InfoRow = None
+try:
+    from beezdesktop.components.widgets import (
+        SelectableLabel,
+        SelectableText,
+        InfoRow,
+    )
+except Exception as _e:
+    logger.warning(f"[FILES] Selectable widgets unavailable, falling back: {_e}")
+    SelectableLabel = None
+    SelectableText = None
+    InfoRow = None
 
 
 def safe_create_task(coro, name="unnamed"):
@@ -1426,14 +1432,25 @@ class FilesView:
                 )
                 if status_code == 200:
                     price_window.close()
+                    tx_hash = result.get("tx_hash", "") if isinstance(result, dict) else ""
+                    short_hash = (tx_hash[:12] + "...") if tx_hash else ""
+                    msg = (
+                        f"Price update for {file_name} submitted to the chain.\n\n"
+                        f"New price: {new_price} BZT\n"
+                        f"TX: {short_hash}\n\n"
+                        "It will become active once a validator includes it in a block."
+                    )
                     await self.app.main_window.dialog(
-                        toga.InfoDialog("Price Updated", f"Price for {file_name} updated to {new_price} BZT")
+                        toga.InfoDialog("Price Update Submitted", msg)
                     )
                     await self._load_files_async()
                 else:
-                    error = result.get("error", "Unknown error")
+                    error = (result or {}).get("error") if isinstance(result, dict) else None
+                    if not error:
+                        error = f"Chain rejected price update (HTTP {status_code})"
                     status_label.text = f"Error: {error}"
             except Exception as e:
+                logger.exception(f"[FILES] Price update failed for {file_id}: {e}")
                 status_label.text = f"Error: {e}"
 
         save_btn = toga.Button(
@@ -1530,13 +1547,19 @@ class FilesView:
                 if status_code == 200:
                     tag_window.close()
                     await self.app.main_window.dialog(
-                        toga.InfoDialog("Tags Updated", f"Tags for {file_name}: {', '.join(new_tags) if new_tags else 'none'}")
+                        toga.InfoDialog(
+                            "Tags Updated",
+                            f"Tags for {file_name}: {', '.join(new_tags) if new_tags else 'none'}",
+                        )
                     )
                     await self._load_files_async()
                 else:
-                    error = result.get("error", "Unknown error")
+                    error = (result or {}).get("error") if isinstance(result, dict) else None
+                    if not error:
+                        error = f"Chain rejected tag update (HTTP {status_code})"
                     status_label.text = f"Error: {error}"
             except Exception as e:
+                logger.exception(f"[FILES] Tag update failed for {file_id}: {e}")
                 status_label.text = f"Error: {e}"
 
         def on_clear(widget):

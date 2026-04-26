@@ -470,11 +470,19 @@ class KnowledgeView:
             pass
 
     def _get_smart_url(self) -> str:
-        """Resolve the selected smart node to an HTTP URL."""
+        """Resolve the selected smart node to an HTTP URL.
+
+        Production smart nodes always advertise a public IP via consensus, so
+        we never want to fall back to localhost. If no smart node is selected,
+        return None so callers can short-circuit and surface a friendly UI
+        message instead of silently hitting a non-existent local server.
+        """
         if not self.selected_smart_node:
-            return "http://localhost:5000"
+            return ""
         from shared.client_core.docker_mapping import resolve_node_address
-        ip = self.selected_smart_node.get("ip", "smart1")
+        ip = self.selected_smart_node.get("ip", "")
+        if not ip:
+            return ""
         try:
             host_ip, port = resolve_node_address(ip, use_zmq=False)
         except Exception:
