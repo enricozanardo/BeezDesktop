@@ -13,13 +13,17 @@ import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
 import asyncio
-import threading
 import hashlib
 
 from shared.client_core.encryption import derive_encryption_key
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.smart")
+
+# Short timeout for status-only HTTP calls. Long-running ops (index, query)
+# get their own client instance with the default 120s SmartNodeClient timeout.
+_STATUS_TIMEOUT_S = 5
 
 
 def _extract_pdf_text(file_path: str) -> str:
@@ -49,11 +53,11 @@ def _extract_pdf_text(file_path: str) -> str:
     return "\n\n".join(text_parts)
 
 
-class SmartView:
+class SmartView(ViewLifecycle):
     """RAG query interface for BeezSmart nodes."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.selected_smart_node = None
         self.smart_nodes = []
         self.workspace_files = []
@@ -357,51 +361,55 @@ class SmartView:
         self.sources_label.text = ""
         self._set_busy(True, "Processing query...")
 
+        # Snapshot all UI/state values on the main thread so the worker
+        # never touches Toga widgets after destruction.
+        node_snapshot = dict(self.selected_smart_node)
+        wallet = self.app.client.get_current_wallet()
+        wallet_addr = wallet.address
+        wallet_privkey = wallet.privkey.hex()
+        wallet_pubkey = wallet.get_pubkey_hex()
+        wallet_key = derive_encryption_key(wallet)
+        top_k = int(self.top_k_select.value or "5")
+        query_text_clean = query_text.strip()
+
         def do_query():
             try:
                 from shared.client_core.docker_mapping import resolve_node_address
                 from shared.client_core.smart_client import SmartNodeClient
 
-                ip = self.selected_smart_node.get("ip", "smart1")
+                ip = node_snapshot.get("ip", "smart1")
                 host_ip, port = resolve_node_address(ip, use_zmq=False)
                 smart_url = f"http://{host_ip}:{port}"
 
                 client = SmartNodeClient(smart_url)
-
-                wallet = self.app.client.get_current_wallet()
-                key = derive_encryption_key(wallet)
-
-                top_k = int(self.top_k_select.value or "5")
-
                 result = client.query(
-                    query_text=query_text.strip(),
-                    decryption_key=key,
-                    wallet_address=wallet.address,
+                    query_text=query_text_clean,
+                    decryption_key=wallet_key,
+                    wallet_address=wallet_addr,
                     top_k=top_k,
                 )
 
                 # Broadcast smart_query transaction to blockchain
                 try:
                     from shared.client_core.smart_client import build_smart_query_tx
-                    smart_node_id = self.selected_smart_node.get("node_id", "")
-                    smart_node_wallet = self.selected_smart_node.get("wallet_address", "")
-                    query_hash = result.get("query_hash", hashlib.sha256(query_text.strip().encode()).hexdigest())
+                    smart_node_id = node_snapshot.get("node_id", "")
+                    smart_node_wallet = node_snapshot.get("wallet_address", "")
+                    query_hash = result.get("query_hash", hashlib.sha256(query_text_clean.encode()).hexdigest())
                     answer_hash = result.get("answer_hash", "")
                     file_ids = [s.get("file_id", "") for s in result.get("sources", []) if s.get("file_id")]
-                    # Deduplicate
                     file_ids = list(set(file_ids)) if file_ids else []
                     query_cost = result.get("cost", 0)
 
                     tx = build_smart_query_tx(
-                        wallet_address=wallet.address,
+                        wallet_address=wallet_addr,
                         query_hash=query_hash,
                         answer_hash=answer_hash,
                         smart_node_id=smart_node_id,
                         smart_node_wallet=smart_node_wallet,
                         cost=float(query_cost),
                         file_ids=file_ids,
-                        private_key_hex=wallet.privkey.hex(),
-                        public_key_hex=wallet.get_pubkey_hex(),
+                        private_key_hex=wallet_privkey,
+                        public_key_hex=wallet_pubkey,
                     )
                     resp, status = self.app.client.send_raw_transaction(tx)
                     if status == 200:
@@ -411,17 +419,11 @@ class SmartView:
                 except Exception as tx_err:
                     logger.error(f"[SMART VIEW] smart_query TX error: {tx_err}")
 
-                # Update UI on main thread
-                self.app.loop.call_soon_threadsafe(
-                    self._display_result, result
-                )
-
+                self.safe_ui_call(self._display_result, result)
             except Exception as e:
-                self.app.loop.call_soon_threadsafe(
-                    self._display_error, str(e)
-                )
+                self.safe_ui_call(self._display_error, str(e))
 
-        threading.Thread(target=do_query, daemon=True).start()
+        self.spawn_worker(do_query, name="query")
 
     def _display_result(self, result):
         """Display query result in the UI."""
@@ -470,7 +472,8 @@ class SmartView:
 
         self.workspace_stats_label.text = "Select a file to index..."
 
-        # Use Toga 0.4+ async dialog API
+        # Use Toga 0.4+ async dialog API; track the task in lifecycle so
+        # it is cancelled if the user navigates away mid-dialog.
         try:
             dialog = toga.OpenFileDialog(
                 title="Select a file to index for RAG",
@@ -479,8 +482,10 @@ class SmartView:
                     "xml", "html", "yaml", "yml", "toml", "pdf",
                 ],
             )
-            task = asyncio.create_task(self.app.main_window.dialog(dialog))
-            task.add_done_callback(self._on_file_selected_for_index)
+            task = self.spawn_task(self.app.main_window.dialog(dialog),
+                                   name="open_file_dialog")
+            if task is not None:
+                task.add_done_callback(self._on_file_selected_for_index)
         except Exception as e:
             self.workspace_stats_label.text = f"Error opening file dialog: {e}"
 
@@ -503,11 +508,18 @@ class SmartView:
         file_path = str(result)
         self._set_busy(True, f"Indexing {file_path.split('/')[-1].split(chr(92))[-1]}...")
 
+        # Snapshot UI/state values before spawning the worker
+        node_snapshot = dict(self.selected_smart_node)
+        wallet = self.app.client.get_current_wallet()
+        wallet_addr = wallet.address
+        wallet_privkey = wallet.privkey.hex()
+        wallet_pubkey = wallet.get_pubkey_hex()
+        wallet_key = derive_encryption_key(wallet)
+
         def do_index():
             try:
                 import uuid as _uuid
 
-                # Read file content (PDF or plain text)
                 if file_path.lower().endswith(".pdf"):
                     content = _extract_pdf_text(file_path)
                 else:
@@ -515,23 +527,18 @@ class SmartView:
                         content = f.read()
 
                 if not content or not content.strip():
-                    self.app.loop.call_soon_threadsafe(
-                        setattr, self.workspace_stats_label, "text",
-                        "File is empty or could not extract text."
-                    )
+                    self.safe_ui_call(self._set_workspace_stats_text,
+                                      "File is empty or could not extract text.")
                     return
 
                 from shared.client_core.docker_mapping import resolve_node_address
                 from shared.client_core.smart_client import SmartNodeClient
 
-                ip = self.selected_smart_node.get("ip", "smart1")
+                ip = node_snapshot.get("ip", "smart1")
                 host_ip, port = resolve_node_address(ip, use_zmq=False)
                 smart_url = f"http://{host_ip}:{port}"
 
                 client = SmartNodeClient(smart_url)
-
-                wallet = self.app.client.get_current_wallet()
-                key = derive_encryption_key(wallet)
 
                 file_id = str(_uuid.uuid4())
                 file_name = file_path.split("/")[-1].split("\\")[-1]
@@ -540,28 +547,27 @@ class SmartView:
                     file_id=file_id,
                     file_name=file_name,
                     plaintext_content=content,
-                    encryption_key=key,
-                    wallet_address=wallet.address,
+                    encryption_key=wallet_key,
+                    wallet_address=wallet_addr,
                 )
 
                 chunks = result.get("chunks_indexed", 0)
                 cost = result.get("total_cost", 0)
                 smart_node_id = result.get("smart_node_id", "")
 
-                # Broadcast smart_index transaction to blockchain
                 tx_msg = ""
                 try:
                     from shared.client_core.smart_client import build_smart_index_tx
-                    smart_node_wallet = self.selected_smart_node.get("wallet_address", "")
+                    smart_node_wallet = node_snapshot.get("wallet_address", "")
                     tx = build_smart_index_tx(
-                        wallet_address=wallet.address,
+                        wallet_address=wallet_addr,
                         file_id=file_id,
                         smart_node_id=smart_node_id,
                         smart_node_wallet=smart_node_wallet,
                         num_chunks_indexed=chunks,
                         total_cost=cost,
-                        private_key_hex=wallet.privkey.hex(),
-                        public_key_hex=wallet.get_pubkey_hex(),
+                        private_key_hex=wallet_privkey,
+                        public_key_hex=wallet_pubkey,
                     )
                     resp, status = self.app.client.send_raw_transaction(tx)
                     if status == 200:
@@ -573,20 +579,13 @@ class SmartView:
                     logger.error(f"[SMART VIEW] smart_index TX error: {tx_err}")
 
                 msg = f"Indexed {file_name}: {chunks} chunks, cost {cost:.2f} BZT{tx_msg}"
-                def on_ok():
-                    self._set_busy(False)
-                    self.workspace_stats_label.text = msg
-                    self._refresh_workspace()
-                self.app.loop.call_soon_threadsafe(on_ok)
+                self.safe_ui_call(self._after_index_or_remove, msg)
 
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.workspace_stats_label.text = f"Indexing error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._after_index_or_remove, f"Indexing error: {err_msg}")
 
-        threading.Thread(target=do_index, daemon=True).start()
+        self.spawn_worker(do_index, name="index_file")
 
     def _on_file_table_select(self, widget):
         """Handle file table row selection."""
@@ -624,62 +623,93 @@ class SmartView:
         self.remove_btn.enabled = False
         self._set_busy(True, f"Removing {file_name}...")
 
+        # Snapshot UI/state values
+        node_snapshot = dict(self.selected_smart_node)
+        wallet = self.app.client.get_current_wallet()
+        wallet_addr = wallet.address
+
         def do_remove():
             try:
                 from shared.client_core.docker_mapping import resolve_node_address
                 from shared.client_core.smart_client import SmartNodeClient
 
-                ip = self.selected_smart_node.get("ip", "smart1")
+                ip = node_snapshot.get("ip", "smart1")
                 host_ip, port = resolve_node_address(ip, use_zmq=False)
                 smart_url = f"http://{host_ip}:{port}"
 
                 client = SmartNodeClient(smart_url)
-                wallet = self.app.client.get_current_wallet()
-
-                success = client.delete_file(file_id, wallet.address)
+                success = client.delete_file(file_id, wallet_addr)
 
                 if success:
                     msg = f"Removed {file_name} successfully."
                 else:
                     msg = f"Failed to remove {file_name} (not found or unauthorized)."
 
-                def on_ok():
-                    self._set_busy(False)
-                    self.workspace_stats_label.text = msg
-                    self._refresh_workspace()
-                self.app.loop.call_soon_threadsafe(on_ok)
+                self.safe_ui_call(self._after_index_or_remove, msg)
 
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.workspace_stats_label.text = f"Remove error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._after_index_or_remove, f"Remove error: {err_msg}")
 
-        threading.Thread(target=do_remove, daemon=True).start()
+        self.spawn_worker(do_remove, name="remove_file")
+
+    def _set_workspace_stats_text(self, text: str) -> None:
+        """Helper to update workspace_stats_label safely from a worker."""
+        try:
+            self.workspace_stats_label.text = text
+        except Exception:
+            pass
+
+    def _after_index_or_remove(self, msg: str) -> None:
+        """Common post-mutation flow: clear busy, set status, refresh workspace."""
+        self._set_busy(False)
+        self._set_workspace_stats_text(msg)
+        self._refresh_workspace()
 
     def _on_refresh_workspace(self, widget=None):
-        """Refresh workspace file list."""
+        """Refresh workspace file list (button handler)."""
         self._refresh_workspace()
 
     def _refresh_workspace(self):
-        """Fetch and display workspace statistics."""
+        """Fetch and display workspace statistics off the main thread.
+
+        Previously this method ran the HTTP call synchronously on the Toga
+        main thread with timeout=10s, freezing the entire UI. Now it spawns
+        a worker via the lifecycle and updates widgets only via safe_ui_call.
+        """
         if not self.selected_smart_node:
             return
+        if self._destroyed:
+            return
 
+        node_snapshot = dict(self.selected_smart_node)
+        wallet = self.app.client.get_current_wallet()
+        if wallet is None:
+            return
+        wallet_addr = wallet.address
+
+        def do_refresh():
+            try:
+                from shared.client_core.docker_mapping import resolve_node_address
+                from shared.client_core.smart_client import SmartNodeClient
+
+                ip = node_snapshot.get("ip", "smart1")
+                host_ip, port = resolve_node_address(ip, use_zmq=False)
+                smart_url = f"http://{host_ip}:{port}"
+
+                client = SmartNodeClient(smart_url, timeout=_STATUS_TIMEOUT_S)
+                stats = client.get_workspace_stats(wallet_addr)
+                self.safe_ui_call(self._apply_workspace_stats, stats)
+            except Exception as exc:
+                err_msg = str(exc)
+                self.safe_ui_call(self._set_workspace_stats_text,
+                                  f"Error loading workspace: {err_msg}")
+
+        self.spawn_worker(do_refresh, name="refresh_workspace")
+
+    def _apply_workspace_stats(self, stats: dict) -> None:
+        """Render workspace stats - runs on the main thread via safe_ui_call."""
         try:
-            from shared.client_core.docker_mapping import resolve_node_address
-            from shared.client_core.smart_client import SmartNodeClient
-
-            ip = self.selected_smart_node.get("ip", "smart1")
-            host_ip, port = resolve_node_address(ip, use_zmq=False)
-            smart_url = f"http://{host_ip}:{port}"
-
-            client = SmartNodeClient(smart_url, timeout=10)
-
-            wallet = self.app.client.get_current_wallet()
-            stats = client.get_workspace_stats(wallet.address)
-
             total_files = stats.get("total_files", 0)
             total_chunks = stats.get("total_chunks", 0)
             total_queries = stats.get("total_queries", 0)
@@ -689,7 +719,6 @@ class SmartView:
                 f"{total_queries} queries made"
             )
 
-            # Update table and parallel file_id list
             files = stats.get("files", [])
             data = []
             self._file_ids = []
@@ -703,6 +732,5 @@ class SmartView:
             self.file_table.data = data
             self._selected_file_idx = -1
             self.remove_btn.enabled = False
-
-        except Exception as e:
-            self.workspace_stats_label.text = f"Error loading workspace: {e}"
+        except Exception as exc:
+            logger.error(f"[SMART VIEW] _apply_workspace_stats error: {exc}")

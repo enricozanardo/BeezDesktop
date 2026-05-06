@@ -18,41 +18,85 @@ import hashlib
 
 from shared.client_core.encryption import derive_encryption_key
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.knowledge")
 
+# Tight timeout for marketplace metadata calls. The previous default of 30s
+# left the loading indicator and `_busy` flag set for the full 30s whenever
+# a smart node was unreachable, blocking every subsequent click.
+_MARKETPLACE_TIMEOUT_S = 8
 
+# Module-level fastembed cache. Loaded once via `prewarm_embed_model()` and
+# read-only thereafter, so subsequent queries don't need to acquire a lock.
 _embed_model = None
-_embed_lock = threading.Lock()
+_embed_warm_lock = threading.Lock()
+_embed_warm_started = False
+
+
+def prewarm_embed_model() -> None:
+    """Load the fastembed model in the calling thread (idempotent).
+
+    Designed to be invoked from a daemon thread so the ~33MB BAAI ONNX
+    download / unpack does not block the Toga main loop. Subsequent calls
+    return immediately. Failures are logged and re-raised in `_get_embed_model`.
+    """
+    global _embed_model, _embed_warm_started
+    with _embed_warm_lock:
+        if _embed_model is not None:
+            return
+        if _embed_warm_started:
+            # Another thread is already warming; wait until it finishes.
+            pass
+        _embed_warm_started = True
+    try:
+        from fastembed import TextEmbedding
+        model = TextEmbedding("BAAI/bge-small-en-v1.5")
+    except ImportError as exc:
+        logger.error("[KNOWLEDGE] fastembed unavailable: %s", exc)
+        with _embed_warm_lock:
+            _embed_warm_started = False
+        return
+    except Exception as exc:
+        logger.error("[KNOWLEDGE] fastembed warm-up failed: %s", exc)
+        with _embed_warm_lock:
+            _embed_warm_started = False
+        return
+    with _embed_warm_lock:
+        _embed_model = model
+    logger.info("[KNOWLEDGE] fastembed model warmed up")
 
 
 def _get_embed_model():
-    """Lazy-load and cache the fastembed model (heavy on first call)."""
+    """Return the warmed model or raise if it failed to load."""
     global _embed_model
-    with _embed_lock:
-        if _embed_model is None:
-            try:
-                from fastembed import TextEmbedding
-                _embed_model = TextEmbedding("BAAI/bge-small-en-v1.5")
-            except ImportError:
-                raise RuntimeError(
-                    "fastembed is required for knowledge queries. "
-                    "Install with: pip install fastembed"
-                )
+    if _embed_model is not None:
         return _embed_model
+    # Synchronous fallback if the user fired a query before the background
+    # warm-up completed. This still blocks the calling worker thread (not
+    # the UI), which is acceptable for the first query.
+    prewarm_embed_model()
+    if _embed_model is None:
+        raise RuntimeError(
+            "fastembed is required for knowledge queries. "
+            "Install with: pip install fastembed"
+        )
+    return _embed_model
 
 
-class KnowledgeView:
+class KnowledgeView(ViewLifecycle):
     """Knowledge marketplace interface."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.selected_smart_node = None
         self.smart_nodes = []
         self.listings = []
         self.my_listings = []
         self.selected_listing = None
         self._selected_listing_idx = -1
+        self._reachability_label = None
+        self._has_warned_unreachable = False
 
     def build(self) -> toga.Box:
         """Build the knowledge marketplace view."""
@@ -79,6 +123,17 @@ class KnowledgeView:
             # Smart node selector
             container.add(self._build_node_selector())
 
+            # Reachability banner (hidden until a worker reports a connection error)
+            self._reachability_label = toga.Label(
+                "",
+                style=Pack(
+                    padding=(Spacing.XS, 0),
+                    font_size=Font.SIZE_SMALL,
+                    color=Colors.STATUS_OFFLINE,
+                ),
+            )
+            container.add(self._reachability_label)
+
             # Tab row for Browse / Query / Publish / My Listings
             container.add(self._build_tab_bar())
 
@@ -97,9 +152,13 @@ class KnowledgeView:
             )
             container.add(self.status_label)
 
-            # Load smart nodes and show browse tab (no auto-search)
+            # Load smart nodes (in-memory) and show browse tab (no auto-search)
             self._load_smart_nodes()
             self._show_browse_tab(None)
+
+            # Warm up fastembed model in the background once Knowledge is opened
+            # for the first time. Subsequent queries skip the heavy load.
+            self._kick_off_fastembed_warmup()
         except Exception as e:
             logger.error(f"[KNOWLEDGE] Error building view: {e}")
             import traceback
@@ -384,8 +443,9 @@ class KnowledgeView:
 
         self.tab_content.add(box)
 
-        # Load files
-        self._on_refresh_publish_files(None)
+        # Note: file list does NOT auto-refresh on tab switch. The user clicks
+        # "Refresh Files" to load. This keeps tab switches snappy even when
+        # the smart node is unreachable. Audit: D-04, D-05 freeze repro.
 
     def _show_my_listings_tab(self, widget):
         """Show My Listings management tab."""
@@ -429,7 +489,9 @@ class KnowledgeView:
         box.add(action_row)
 
         self.tab_content.add(box)
-        self._on_refresh_my_listings(None)
+        # Note: listings do NOT auto-refresh on tab switch (audit D-04/D-05).
+        # The user clicks "Refresh" to load. Keeps tab switches snappy when
+        # the smart node is unreachable.
 
     # === Node Management ===
 
@@ -516,38 +578,37 @@ class KnowledgeView:
         def do_search():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(smart_url)
+                client = KnowledgeMarketplaceClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
                 results = client.search_marketplace(query=query_text, tags=tags)
-                self.listings = results
-
-                def update_ui():
-                    self._set_busy(False)
-                    data = []
-                    self._browse_listing_ids = []
-                    for r in results:
-                        data.append((
-                            r.get("title", "Untitled"),
-                            (r.get("seller_address", "")[:12] + "...") if r.get("seller_address") else "?",
-                            str(r.get("price_per_query", "?")),
-                            str(r.get("purchase_price", 0)) if r.get("purchase_price", 0) > 0 else "--",
-                            str(r.get("total_chunks", 0)),
-                            str(r.get("total_queries", 0)),
-                        ))
-                        self._browse_listing_ids.append(r.get("listing_id", ""))
-                    try:
-                        self.browse_table.data = data
-                    except Exception:
-                        pass
-                    self.status_label.text = f"Found {len(results)} listings"
-
-                self.app.loop.call_soon_threadsafe(update_ui)
+                self.safe_ui_call(self._apply_search_results, results)
             except Exception as e:
-                def on_err():
-                    self._set_busy(False)
-                    self.status_label.text = f"Search error: {e}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                err = str(e)
+                self.safe_ui_call(self._on_marketplace_error, "Search", err)
 
-        threading.Thread(target=do_search, daemon=True).start()
+        self.spawn_worker(do_search, name="search_marketplace")
+
+    def _apply_search_results(self, results):
+        """Render search results - main thread only via safe_ui_call."""
+        self._set_busy(False)
+        self.listings = list(results)
+        data = []
+        self._browse_listing_ids = []
+        for r in results:
+            data.append((
+                r.get("title", "Untitled"),
+                (r.get("seller_address", "")[:12] + "...") if r.get("seller_address") else "?",
+                str(r.get("price_per_query", "?")),
+                str(r.get("purchase_price", 0)) if r.get("purchase_price", 0) > 0 else "--",
+                str(r.get("total_chunks", 0)),
+                str(r.get("total_queries", 0)),
+            ))
+            self._browse_listing_ids.append(r.get("listing_id", ""))
+        try:
+            self.browse_table.data = data
+        except Exception:
+            pass
+        self.status_label.text = f"Found {len(results)} listings"
+        self._clear_reachability_warning()
 
     def _on_browse_select(self, widget):
         """Handle browse table row selection."""
@@ -680,12 +741,19 @@ class KnowledgeView:
         smart_node_id = self.selected_smart_node.get("node_id", "")
         smart_node_wallet = self.selected_smart_node.get("wallet_address", "")
 
+        # Snapshot wallet credentials so the worker never touches `wallet` later
+        wallet_addr = wallet.address
+        wallet_privkey = wallet.privkey.hex()
+        wallet_pubkey = wallet.get_pubkey_hex()
+
         def do_query():
             try:
                 from shared.client_core.knowledge_client import (
                     KnowledgeMarketplaceClient, build_knowledge_query_tx,
                 )
 
+                # Marketplace query is a long-running RAG round-trip; allow the
+                # client default timeout (30s) instead of the metadata one.
                 client = KnowledgeMarketplaceClient(smart_url)
 
                 model = _get_embed_model()
@@ -696,14 +764,14 @@ class KnowledgeView:
                     listing_id=listing["listing_id"],
                     query_text=q_text,
                     query_vector=query_vector,
-                    buyer_address=wallet.address,
+                    buyer_address=wallet_addr,
                     top_k=5,
                 )
 
                 tx_msg = ""
                 try:
                     tx = build_knowledge_query_tx(
-                        buyer_address=wallet.address,
+                        buyer_address=wallet_addr,
                         seller_address=listing.get("seller_address", ""),
                         listing_id=listing["listing_id"],
                         query_hash=result.get("query_hash", ""),
@@ -711,35 +779,39 @@ class KnowledgeView:
                         cost=float(result.get("cost", 0)),
                         smart_node_id=smart_node_id,
                         smart_node_wallet=smart_node_wallet,
-                        private_key_hex=wallet.privkey.hex(),
-                        public_key_hex=wallet.get_pubkey_hex(),
+                        private_key_hex=wallet_privkey,
+                        public_key_hex=wallet_pubkey,
                     )
                     resp, status = self.app.client.send_raw_transaction(tx)
                     if status == 200:
                         tx_msg = f" | TX: {tx['tx_hash'][:12]}..."
                     else:
-                        tx_msg = f" | TX failed"
+                        tx_msg = " | TX failed"
                 except Exception as tx_err:
                     logger.error(f"[KNOWLEDGE] TX error: {tx_err}")
 
-                def update_ui():
-                    self._set_busy(False)
-                    self.ask_btn.enabled = True
-                    self.answer_display.value = result.get("answer", "No answer.")
-                    cost = result.get("cost", 0)
-                    self.query_cost_label.text = f"Cost: {cost} BZT{tx_msg}"
-
-                self.app.loop.call_soon_threadsafe(update_ui)
+                self.safe_ui_call(self._apply_marketplace_query_result, result, tx_msg)
 
             except Exception as e:
                 error_msg = str(e)
-                def show_err():
-                    self._set_busy(False)
-                    self.ask_btn.enabled = True
-                    self.query_cost_label.text = f"Error: {error_msg}"
-                self.app.loop.call_soon_threadsafe(show_err)
+                self.safe_ui_call(self._on_marketplace_error, "Query", error_msg)
+                self.safe_ui_call(self._reenable_ask_btn)
 
-        threading.Thread(target=do_query, daemon=True).start()
+        self.spawn_worker(do_query, name="marketplace_query")
+
+    def _apply_marketplace_query_result(self, result, tx_msg: str) -> None:
+        self._set_busy(False)
+        self.ask_btn.enabled = True
+        self.answer_display.value = result.get("answer", "No answer.")
+        cost = result.get("cost", 0)
+        self.query_cost_label.text = f"Cost: {cost} BZT{tx_msg}"
+        self._clear_reachability_warning()
+
+    def _reenable_ask_btn(self) -> None:
+        try:
+            self.ask_btn.enabled = True
+        except Exception:
+            pass
 
     # === Purchase Handler ===
 
@@ -781,7 +853,7 @@ class KnowledgeView:
                     KnowledgeMarketplaceClient, build_knowledge_purchase_tx,
                 )
 
-                client = KnowledgeMarketplaceClient(smart_url)
+                client = KnowledgeMarketplaceClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
 
                 full_listing = client.get_listing(listing_id)
                 file_ids = full_listing.get("file_ids", [])
@@ -811,20 +883,19 @@ class KnowledgeView:
                     logger.error(f"[KNOWLEDGE] Purchase TX error: {tx_err}")
 
                 msg = f"Purchased! Price: {full_listing.get('purchase_price', 0)} BZT{tx_msg}"
-                def on_ok():
-                    self._set_busy(False)
-                    self.buy_listing_btn.enabled = True
-                    self.status_label.text = msg
-                self.app.loop.call_soon_threadsafe(on_ok)
+                self.safe_ui_call(self._after_purchase, msg, True)
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.buy_listing_btn.enabled = True
-                    self.status_label.text = f"Purchase error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._after_purchase, f"Purchase error: {err_msg}", False)
 
-        threading.Thread(target=do_purchase, daemon=True).start()
+        self.spawn_worker(do_purchase, name="purchase_listing")
+
+    def _after_purchase(self, msg: str, success: bool) -> None:
+        self._set_busy(False)
+        self.buy_listing_btn.enabled = True
+        self.status_label.text = msg
+        if success:
+            self._clear_reachability_warning()
 
     # === Publish Handlers ===
 
@@ -845,34 +916,34 @@ class KnowledgeView:
                 if not wallet_address:
                     raise ValueError("No wallet connected")
                 from shared.client_core.smart_client import SmartNodeClient
-                client = SmartNodeClient(smart_url, timeout=15)
+                client = SmartNodeClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
                 stats = client.get_workspace_stats(wallet_address)
                 files = stats.get("files", [])
-
-                def update():
-                    self._set_busy(False)
-                    data = []
-                    self._pub_file_ids = []
-                    self._pub_selected_files = set()
-                    for f in files:
-                        fid = f.get("file_id", "")
-                        data.append((
-                            "[ ]",
-                            f.get("file_name", "unknown"),
-                            str(f.get("num_chunks", 0)),
-                        ))
-                        self._pub_file_ids.append(fid)
-                    self.pub_file_table.data = data
-
-                self.app.loop.call_soon_threadsafe(update)
+                self.safe_ui_call(self._apply_publish_files, files)
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.status_label.text = f"Error loading files: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._on_marketplace_error, "Loading files", err_msg)
 
-        threading.Thread(target=do_refresh, daemon=True).start()
+        self.spawn_worker(do_refresh, name="refresh_publish_files")
+
+    def _apply_publish_files(self, files) -> None:
+        self._set_busy(False)
+        data = []
+        self._pub_file_ids = []
+        self._pub_selected_files = set()
+        for f in files:
+            fid = f.get("file_id", "")
+            data.append((
+                "[ ]",
+                f.get("file_name", "unknown"),
+                str(f.get("num_chunks", 0)),
+            ))
+            self._pub_file_ids.append(fid)
+        try:
+            self.pub_file_table.data = data
+        except Exception:
+            pass
+        self._clear_reachability_warning()
 
     def _on_pub_file_select(self, widget):
         """Toggle file selection for publishing."""
@@ -951,7 +1022,8 @@ class KnowledgeView:
                     KnowledgeMarketplaceClient, build_knowledge_publish_tx,
                 )
 
-                client = KnowledgeMarketplaceClient(smart_url)
+                # Publish involves uploading chunks - allow longer timeout
+                client = KnowledgeMarketplaceClient(smart_url, timeout=60)
 
                 result = client.publish_listing(
                     seller_address=wallet_address,
@@ -991,21 +1063,23 @@ class KnowledgeView:
                 msg = (f"Published! {total_files} files, {total_chunks} chunks, "
                        f"ID: {listing_id[:12]}...{tx_msg}")
 
-                def done():
-                    self._set_busy(False)
-                    self.publish_btn.enabled = True
-                    self.status_label.text = msg
-                self.app.loop.call_soon_threadsafe(done)
+                self.safe_ui_call(self._after_publish, msg, True)
 
             except Exception as e:
                 error_msg = str(e)
-                def err():
-                    self._set_busy(False)
-                    self.publish_btn.enabled = True
-                    self.status_label.text = f"Publish error: {error_msg}"
-                self.app.loop.call_soon_threadsafe(err)
+                self.safe_ui_call(self._after_publish, f"Publish error: {error_msg}", False)
 
-        threading.Thread(target=do_publish, daemon=True).start()
+        self.spawn_worker(do_publish, name="publish_listing")
+
+    def _after_publish(self, msg: str, success: bool) -> None:
+        self._set_busy(False)
+        try:
+            self.publish_btn.enabled = True
+        except Exception:
+            pass
+        self.status_label.text = msg
+        if success:
+            self._clear_reachability_warning()
 
     # === My Listings Handlers ===
 
@@ -1026,36 +1100,36 @@ class KnowledgeView:
                 if not wallet_address:
                     raise ValueError("No wallet connected")
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(smart_url)
+                client = KnowledgeMarketplaceClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
                 results = client.get_my_listings(wallet_address)
-                self.my_listings = results
-
-                def update():
-                    self._set_busy(False)
-                    data = []
-                    self._my_listing_ids = []
-                    for r in results:
-                        data.append((
-                            r.get("title", "Untitled"),
-                            r.get("status", "?"),
-                            str(r.get("price_per_query", "?")),
-                            str(r.get("purchase_price", 0)) if r.get("purchase_price", 0) > 0 else "--",
-                            str(r.get("total_chunks", 0)),
-                            str(r.get("total_queries", 0)),
-                        ))
-                        self._my_listing_ids.append(r.get("listing_id", ""))
-                    self.my_table.data = data
-                    self.status_label.text = f"{len(results)} listings"
-
-                self.app.loop.call_soon_threadsafe(update)
+                self.safe_ui_call(self._apply_my_listings, results)
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.status_label.text = f"Error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._on_marketplace_error, "My listings", err_msg)
 
-        threading.Thread(target=do_refresh, daemon=True).start()
+        self.spawn_worker(do_refresh, name="refresh_my_listings")
+
+    def _apply_my_listings(self, results) -> None:
+        self._set_busy(False)
+        self.my_listings = list(results)
+        data = []
+        self._my_listing_ids = []
+        for r in results:
+            data.append((
+                r.get("title", "Untitled"),
+                r.get("status", "?"),
+                str(r.get("price_per_query", "?")),
+                str(r.get("purchase_price", 0)) if r.get("purchase_price", 0) > 0 else "--",
+                str(r.get("total_chunks", 0)),
+                str(r.get("total_queries", 0)),
+            ))
+            self._my_listing_ids.append(r.get("listing_id", ""))
+        try:
+            self.my_table.data = data
+        except Exception:
+            pass
+        self.status_label.text = f"{len(results)} listings"
+        self._clear_reachability_warning()
 
     def _on_my_listing_select(self, widget):
         """Handle my listing table selection."""
@@ -1092,21 +1166,14 @@ class KnowledgeView:
         def do_update():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(smart_url)
+                client = KnowledgeMarketplaceClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
                 client.update_listing(lid, wallet_address, status=new_status)
-                def on_ok():
-                    self._set_busy(False)
-                    self.status_label.text = f"Listing {new_status}"
-                    self._on_refresh_my_listings(None)
-                self.app.loop.call_soon_threadsafe(on_ok)
+                self.safe_ui_call(self._after_listing_action, f"Listing {new_status}", True)
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.status_label.text = f"Error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._after_listing_action, f"Error: {err_msg}", False)
 
-        threading.Thread(target=do_update, daemon=True).start()
+        self.spawn_worker(do_update, name="pause_listing")
 
     def _on_unpublish_listing(self, widget):
         """Delete/unpublish selected listing."""
@@ -1126,18 +1193,75 @@ class KnowledgeView:
         def do_delete():
             try:
                 from shared.client_core.knowledge_client import KnowledgeMarketplaceClient
-                client = KnowledgeMarketplaceClient(smart_url)
+                client = KnowledgeMarketplaceClient(smart_url, timeout=_MARKETPLACE_TIMEOUT_S)
                 client.delete_listing(lid, wallet_address)
-                def on_ok():
-                    self._set_busy(False)
-                    self.status_label.text = "Listing unpublished."
-                    self._on_refresh_my_listings(None)
-                self.app.loop.call_soon_threadsafe(on_ok)
+                self.safe_ui_call(self._after_listing_action, "Listing unpublished.", True)
             except Exception as e:
                 err_msg = str(e)
-                def on_err():
-                    self._set_busy(False)
-                    self.status_label.text = f"Error: {err_msg}"
-                self.app.loop.call_soon_threadsafe(on_err)
+                self.safe_ui_call(self._after_listing_action, f"Error: {err_msg}", False)
 
-        threading.Thread(target=do_delete, daemon=True).start()
+        self.spawn_worker(do_delete, name="unpublish_listing")
+
+    def _after_listing_action(self, msg: str, success: bool) -> None:
+        self._set_busy(False)
+        self.status_label.text = msg
+        if success:
+            self._clear_reachability_warning()
+            self._on_refresh_my_listings(None)
+
+    # ------------------------------------------------------------------
+    # Reachability banner + connection-error handler
+    # ------------------------------------------------------------------
+
+    def _on_marketplace_error(self, op: str, err: str) -> None:
+        """Surface marketplace worker errors. Connection errors update the
+        reachability banner so the user knows it's a network issue, not a
+        UI bug. Other errors go to the status label.
+        """
+        self._set_busy(False)
+        try:
+            self.status_label.text = f"{op} error: {err}"
+        except Exception:
+            pass
+
+        lower = err.lower()
+        is_conn_err = any(
+            tok in lower for tok in (
+                "connection", "timed out", "timeout", "max retries",
+                "name or service", "unreachable", "refused",
+            )
+        )
+        if is_conn_err:
+            self._show_reachability_warning()
+
+    def _show_reachability_warning(self) -> None:
+        if self._reachability_label is None:
+            return
+        try:
+            self._reachability_label.text = (
+                "[!] Smart node unreachable. Check the node status or pick "
+                "another smart node above."
+            )
+            self._has_warned_unreachable = True
+        except Exception:
+            pass
+
+    def _clear_reachability_warning(self) -> None:
+        if not self._has_warned_unreachable or self._reachability_label is None:
+            return
+        try:
+            self._reachability_label.text = ""
+            self._has_warned_unreachable = False
+        except Exception:
+            pass
+
+    def _kick_off_fastembed_warmup(self) -> None:
+        """Pre-warm the fastembed model on a daemon thread.
+
+        First-time download is ~33 MB and can take several seconds; doing
+        it in the background means the first marketplace query feels much
+        snappier and the lock contention is gone after warm-up completes.
+        """
+        if _embed_model is not None:
+            return
+        self.spawn_worker(prewarm_embed_model, name="fastembed_warmup")

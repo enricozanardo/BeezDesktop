@@ -190,11 +190,19 @@ class BeezDesktopApp(toga.App):
         """Clear the content area and cancel any active view refresh tasks."""
         if hasattr(self, '_active_view') and self._active_view is not None:
             view = self._active_view
+            # Legacy hook (BlockchainView) - keep working alongside the new lifecycle
             if hasattr(view, '_auto_refresh_enabled'):
                 view._auto_refresh_enabled = False
             if hasattr(view, '_refresh_task') and view._refresh_task is not None:
                 view._refresh_task.cancel()
                 view._refresh_task = None
+            # New unified lifecycle: every ViewLifecycle subclass cleans up here
+            destroy = getattr(view, 'destroy', None)
+            if callable(destroy):
+                try:
+                    destroy()
+                except Exception as exc:
+                    logger.error("destroy() failed for %s: %s", type(view).__name__, exc)
         self._active_view = None
 
         for child in list(self.content_area.children):
@@ -202,6 +210,8 @@ class BeezDesktopApp(toga.App):
 
     def _switch_view(self, view_id: str, view_class_path: str, view_class_name: str, widget=None):
         """Generic view switcher to reduce boilerplate."""
+        import time
+        t0 = time.monotonic()
         self._clear_content()
         self.current_view = view_id
         self._set_active_nav(view_id)
@@ -216,6 +226,18 @@ class BeezDesktopApp(toga.App):
         # Reset scroll position to top
         if hasattr(self, '_scroll'):
             self._scroll.position = (0, 0)
+
+        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        if elapsed_ms > 250:
+            # Regression guard for audit D-04/D-05: a view switch should
+            # never block the UI thread. If it does, something on the new
+            # view is doing sync work in build() instead of spawning a worker.
+            logger.warning(
+                "[NAV] slow view switch '%s' took %dms (>250ms budget)",
+                view_id, elapsed_ms,
+            )
+        else:
+            logger.debug("[NAV] view switch '%s' in %dms", view_id, elapsed_ms)
 
     def _show_dashboard(self, widget=None):
         self._switch_view("dashboard", "beezdesktop.views.dashboard", "DashboardView", widget)
