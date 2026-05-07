@@ -162,6 +162,14 @@ jobs:
       # Briefcase looks for notarytool credentials under the keychain
       # profile name `briefcase-macOS-<TEAM_ID>`. We store them in our
       # ephemeral keychain so notarization runs unattended.
+      #
+      # `xcrun notarytool` is a Swift binary that aborts with SIGTRAP
+      # (exit 133, "Trace/BPT trap: 5") on GitHub Actions runners when
+      # invoked without a controlling TTY. We work around it by:
+      #   - allocating a pseudo-tty via `script -q /dev/null ...`
+      #   - explicitly redirecting stdin to /dev/null
+      #   - passing --team-id explicitly so notarytool doesn't try to
+      #     introspect the App Store Connect API for it
       - name: Configure notarytool keychain profile
         if: steps.signing.outputs.ready == 'true'
         run: |
@@ -169,14 +177,24 @@ jobs:
           API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$API_KEY_PATH"
 
-          xcrun notarytool store-credentials \
+          script -q /dev/null xcrun notarytool store-credentials \
             "briefcase-macOS-${APPLE_TEAM_ID}" \
             --key "$API_KEY_PATH" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
-            --keychain "$KEYCHAIN_PATH"
+            --team-id "$APPLE_TEAM_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            </dev/null
 
           rm -f "$API_KEY_PATH"
+
+          # Sanity check: profile must exist before we hand off to briefcase.
+          security find-generic-password \
+            -l "com.apple.gke.notary.tool.saved-creds" \
+            -a "briefcase-macOS-${APPLE_TEAM_ID}" \
+            "$KEYCHAIN_PATH" >/dev/null \
+            && echo "notarytool profile briefcase-macOS-${APPLE_TEAM_ID} stored OK" \
+            || { echo "ERROR: notarytool profile not found after store-credentials"; exit 1; }
 
       - name: Build macOS app
         run: |
