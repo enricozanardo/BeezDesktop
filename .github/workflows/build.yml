@@ -168,8 +168,9 @@ jobs:
       # invoked without a controlling TTY. We work around it by:
       #   - allocating a pseudo-tty via `script -q /dev/null ...`
       #   - explicitly redirecting stdin to /dev/null
-      #   - passing --team-id explicitly so notarytool doesn't try to
-      #     introspect the App Store Connect API for it
+      # Note: do NOT pass --team-id together with --key/--key-id/--issuer.
+      # `--team-id` is the Apple-ID + app-specific-password auth path;
+      # mixing them makes notarytool refuse with "Cannot store both ...".
       - name: Configure notarytool keychain profile
         if: steps.signing.outputs.ready == 'true'
         run: |
@@ -182,7 +183,6 @@ jobs:
             --key "$API_KEY_PATH" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
-            --team-id "$APPLE_TEAM_ID" \
             --keychain "$KEYCHAIN_PATH" \
             </dev/null
 
