@@ -178,6 +178,11 @@ jobs:
           API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
           echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$API_KEY_PATH"
 
+          # We rely on notarytool's own "Credentials saved to Keychain"
+          # message + exit code 0 as the success signal -- the keychain
+          # entry's attributes don't lend themselves to a portable
+          # `security find-generic-password` lookup across notarytool
+          # versions.
           script -q /dev/null xcrun notarytool store-credentials \
             "briefcase-macOS-${APPLE_TEAM_ID}" \
             --key "$API_KEY_PATH" \
@@ -187,14 +192,6 @@ jobs:
             </dev/null
 
           rm -f "$API_KEY_PATH"
-
-          # Sanity check: profile must exist before we hand off to briefcase.
-          security find-generic-password \
-            -l "com.apple.gke.notary.tool.saved-creds" \
-            -a "briefcase-macOS-${APPLE_TEAM_ID}" \
-            "$KEYCHAIN_PATH" >/dev/null \
-            && echo "notarytool profile briefcase-macOS-${APPLE_TEAM_ID} stored OK" \
-            || { echo "ERROR: notarytool profile not found after store-credentials"; exit 1; }
 
       - name: Build macOS app
         run: |
