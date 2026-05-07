@@ -60,6 +60,14 @@ jobs:
 
   build-macos:
     runs-on: macos-latest
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -82,11 +90,117 @@ jobs:
       - name: Install Briefcase
         run: pip install briefcase
 
+      # Detect whether all required signing secrets are configured.
+      # If any are missing we fall back to --adhoc-sign so the workflow
+      # still produces an (unsigned) artifact for development branches.
+      - name: Detect macOS signing readiness
+        id: signing
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] \
+             && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] \
+             && [ -n "$APPLE_SIGNING_IDENTITY" ] \
+             && [ -n "$APPLE_TEAM_ID" ] \
+             && [ -n "$APPLE_API_KEY_ID" ] \
+             && [ -n "$APPLE_API_ISSUER" ] \
+             && [ -n "$APPLE_API_KEY_BASE64" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "macOS signing secrets detected -- will sign + notarize"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "macOS signing secrets missing -- falling back to --adhoc-sign"
+          fi
+
+      # Import the Developer ID Application .p12 into a fresh, ephemeral
+      # keychain. We use a temp keychain (not the default login keychain)
+      # so that:
+      #   - codesign can find the identity (we add the keychain to the
+      #     search list with `security list-keychains -s`)
+      #   - the cert is wiped at the end of the job (cleanup step)
+      #   - we never touch the runner's persistent keychain state
+      - name: Import signing certificate into ephemeral keychain
+        if: steps.signing.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/beezdesktop-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/beezdesktop-cert.p12"
+
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security \
+            -T /usr/bin/productsign
+
+          # Allow codesign / productsign to use the key without UI prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Add the temp keychain to the search list so `codesign`
+          # actually finds the identity (existing default login.keychain
+          # stays in the list, but ours has priority).
+          ORIGINAL_KEYCHAINS=$(security list-keychains -d user | sed -e 's/[ "]//g' | tr '\n' ' ')
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $ORIGINAL_KEYCHAINS
+
+          echo "Available signing identities:"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+          # Persist for downstream + cleanup steps.
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          rm -f "$CERT_PATH"
+
+      # Briefcase looks for notarytool credentials under the keychain
+      # profile name `briefcase-macOS-<TEAM_ID>`. We store them in our
+      # ephemeral keychain so notarization runs unattended.
+      - name: Configure notarytool keychain profile
+        if: steps.signing.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+          API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          echo "$APPLE_API_KEY_BASE64" | base64 --decode > "$API_KEY_PATH"
+
+          xcrun notarytool store-credentials \
+            "briefcase-macOS-${APPLE_TEAM_ID}" \
+            --key "$API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER" \
+            --keychain "$KEYCHAIN_PATH"
+
+          rm -f "$API_KEY_PATH"
+
       - name: Build macOS app
         run: |
+          set -euo pipefail
           briefcase create macOS
           briefcase build macOS
-          briefcase package macOS --adhoc-sign
+          if [ "${{ steps.signing.outputs.ready }}" = "true" ]; then
+            echo "Packaging signed + notarized macOS app for: $APPLE_SIGNING_IDENTITY"
+            briefcase package macOS \
+              --identity "$APPLE_SIGNING_IDENTITY"
+          else
+            echo "WARNING: producing ad-hoc signed macOS app (will not run on other machines)"
+            briefcase package macOS --adhoc-sign
+          fi
+
+      # Always wipe the ephemeral keychain, even if the build failed.
+      - name: Clean up ephemeral keychain
+        if: always() && steps.signing.outputs.ready == 'true'
+        run: |
+          set +e
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+            rm -f "$KEYCHAIN_PATH"
+          fi
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4

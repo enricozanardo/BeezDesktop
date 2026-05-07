@@ -169,8 +169,26 @@ class ViewLifecycle:
 
         Returns the Task, or None if the view is destroyed or the loop
         is unavailable.
+
+        NOTE: this depends on the asyncio loop actually scheduling the
+        task. Under gbulb (Toga's GTK loop) we have observed B-17 where
+        the loop becomes biased toward GTK events after a heavy event
+        burst (e.g. file upload + dialog dismissal) and newly created
+        tasks sit in the queue without ever running, even though
+        ``loop.call_soon_threadsafe`` callbacks still fire.
+
+        For "fetch data on view build" patterns prefer ``self.bg_load``
+        which uses a thread and is therefore independent of the loop's
+        scheduling state. ``spawn_task`` is still the right tool for
+        coroutines that need to ``await`` Toga dialogs or for handler
+        wrappers; we just instrument it so future regressions are
+        visible in the log.
         """
         if self._destroyed:
+            try:
+                coro.close()
+            except Exception:
+                pass
             return None
 
         loop = getattr(self.app, "loop", None)
@@ -178,14 +196,72 @@ class ViewLifecycle:
             try:
                 loop = asyncio.get_event_loop()
             except RuntimeError:
+                logger.error(
+                    "[%s] spawn_task(%s): no event loop available",
+                    type(self).__name__, name,
+                )
+                try:
+                    coro.close()
+                except Exception:
+                    pass
                 return None
 
         try:
             task = loop.create_task(coro)
-        except RuntimeError:
+        except RuntimeError as exc:
+            logger.error(
+                "[%s] spawn_task(%s): create_task raised %s",
+                type(self).__name__, name, exc,
+            )
+            try:
+                coro.close()
+            except Exception:
+                pass
             return None
         try:
             task.set_name(f"{type(self).__name__}.{name}")
+        except Exception:
+            pass
+
+        # B-17 watchdog: warn if the task is created but never starts
+        # running on the loop within a reasonable window. This is a
+        # diagnostic only - it does not retry or reschedule, but next
+        # time the user reports "data stopped loading" the log will
+        # explicitly say so.
+        view_name = type(self).__name__
+        task_label = f"{view_name}.{name}"
+
+        def _on_done(t: asyncio.Task) -> None:
+            if t.cancelled():
+                logger.debug(
+                    "[lifecycle] task %s cancelled (view destroyed?)", task_label
+                )
+                return
+            exc = t.exception() if not t.cancelled() else None
+            if exc is not None:
+                logger.error(
+                    "[lifecycle] task %s raised: %r", task_label, exc,
+                )
+
+        task.add_done_callback(_on_done)
+
+        async def _watchdog() -> None:
+            # Give the loop generous time to start it. 3s is enormous
+            # for a healthy gbulb loop; if we exceed it the loop is
+            # almost certainly being starved by GTK events.
+            await asyncio.sleep(3.0)
+            if not task.done() and not task.cancelled():
+                # The task is still pending. It was created but never
+                # ran. This is the B-17 fingerprint.
+                logger.warning(
+                    "[lifecycle] B-17: task %s still PENDING after 3s "
+                    "(loop starvation?). Use self.bg_load() instead.",
+                    task_label,
+                )
+
+        try:
+            wd = loop.create_task(_watchdog())
+            wd.add_done_callback(lambda _t: None)
         except Exception:
             pass
 
@@ -195,3 +271,100 @@ class ViewLifecycle:
                 return None
             self._async_tasks.append(task)
         return task
+
+    def bg_load(
+        self,
+        work_fn: Callable,
+        ui_fn: Optional[Callable] = None,
+        *,
+        error_ui_fn: Optional[Callable] = None,
+        name: str = "bg_load",
+    ) -> Optional[threading.Thread]:
+        """Run ``work_fn()`` in a background thread, then deliver the
+        result to ``ui_fn(result)`` on the Toga UI thread.
+
+        This is the B-17 hardened replacement for the common pattern::
+
+            self.spawn_task(self._load_xxx(), name="load_xxx")
+
+        where ``_load_xxx`` was an ``async def`` that immediately awaited
+        ``loop.run_in_executor(None, sync_call)``.
+
+        Why a thread instead of an asyncio.Task?
+            After a burst of GTK activity (file upload + dialog +
+            navigation), gbulb has been observed to leave newly created
+            asyncio tasks PENDING indefinitely while still serving
+            ``call_soon_threadsafe`` callbacks. A plain daemon thread is
+            independent of the loop's scheduling state and always runs.
+
+        Parameters
+        ----------
+        work_fn:
+            Synchronous callable executed in the background thread. Must
+            be safe to call from a non-loop thread.
+        ui_fn:
+            Optional callable invoked on the UI thread with the result
+            of ``work_fn()``. Skipped if the view has been destroyed by
+            the time the work finishes.
+        error_ui_fn:
+            Optional callable invoked on the UI thread with the
+            exception when ``work_fn()`` raises. Skipped on destroy.
+        name:
+            Logical name used in logs and worker thread name.
+        """
+        if self._destroyed:
+            return None
+
+        view = self
+        view_name = type(self).__name__
+
+        def runner() -> None:
+            try:
+                result = work_fn()
+            except Exception as exc:
+                logger.error(
+                    "[%s] bg_load %s failed: %s",
+                    view_name, name, exc,
+                )
+                if error_ui_fn is not None:
+                    view.safe_ui_call(error_ui_fn, exc)
+                return
+
+            if ui_fn is not None:
+                view.safe_ui_call(ui_fn, result)
+
+        return self.spawn_worker(runner, name=name)
+
+    def wrap_handler(self, async_handler: Callable, name: str = "handler") -> Callable:
+        """Wrap an async ``on_press`` handler so it is tracked + cancelled on destroy.
+
+        Usage in build():
+            primary_button("Send", self.wrap_handler(self._on_send, "send"))
+
+        The returned function is sync and returns immediately so Toga
+        does not try to ``await`` it (which would put the task back on
+        Toga's untracked pool). The actual coroutine runs via
+        ``self.spawn_task``, so destroy() can cancel it.
+        """
+        view = self
+
+        def _sync_press(widget):
+            async def _runner():
+                try:
+                    await async_handler(widget)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "[%s] handler %s raised: %s",
+                        type(view).__name__, name, exc,
+                    )
+
+            view.spawn_task(_runner(), name=name)
+
+        _sync_press.__name__ = f"wrap_handler({name})"
+        return _sync_press
+
+    def is_destroyed(self) -> bool:
+        """Tiny helper for views that want to bail mid-await."""
+        return self._destroyed

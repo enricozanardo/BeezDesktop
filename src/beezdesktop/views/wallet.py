@@ -19,32 +19,43 @@ from beezdesktop.theme import (
     primary_button, secondary_button, danger_button,
     status_badge,
 )
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.wallet")
 
 
-def _safe_async(handler, name="unnamed"):
-    """Wrap an async handler for Toga button press."""
-    def wrapper(widget):
-        async def _inner():
-            try:
-                await handler(widget)
-            except Exception as e:
-                logger.error("[WALLET] Handler '%s' error: %s", name, e)
-                import traceback
-                traceback.print_exc()
-        asyncio.create_task(_inner())
-    return wrapper
-
-
-class WalletView:
+class WalletView(ViewLifecycle):
     """Wallet management view."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.mnemonic_input = None
         self.balance_label = None
         self._wallet_storage = None
+
+    def _safe_async(self, handler, name="unnamed"):
+        """Wrap an async handler for a Toga button press.
+
+        The returned function spawns the coroutine via ``self.spawn_task``
+        so destroy() can cancel any in-flight handler that the user
+        navigated away from.
+        """
+        view = self
+
+        def wrapper(widget):
+            async def _inner():
+                try:
+                    await handler(widget)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    logger.error("[WALLET] Handler '%s' error: %s", name, e)
+                    import traceback
+                    traceback.print_exc()
+
+            view.spawn_task(_inner(), name=name)
+
+        return wrapper
 
     def _get_storage(self):
         if self._wallet_storage is None:
@@ -86,9 +97,9 @@ class WalletView:
                 style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY, padding=(0, 0, Spacing.MD, 0)),
             ))
             btn_row = toga.Box(style=Pack(direction=ROW))
-            btn_row.add(primary_button("Load Saved Wallet", _safe_async(self._load_saved, "load")))
+            btn_row.add(primary_button("Load Saved Wallet", self._safe_async(self._load_saved, "load")))
             btn_row.add(toga.Box(style=Pack(width=Spacing.SM)))
-            btn_row.add(danger_button("Delete Saved", _safe_async(self._delete_saved, "delete"), width=140))
+            btn_row.add(danger_button("Delete Saved", self._safe_async(self._delete_saved, "delete"), width=140))
             saved.add(btn_row)
             box.add(saved)
             box.add(spacer(Spacing.SECTION_GAP))
@@ -99,7 +110,7 @@ class WalletView:
             "Generate a brand-new wallet with a 12-word mnemonic phrase.",
             style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY, padding=(0, 0, Spacing.MD, 0)),
         ))
-        create.add(primary_button("Generate Wallet", _safe_async(self._create_wallet, "create")))
+        create.add(primary_button("Generate Wallet", self._safe_async(self._create_wallet, "create")))
         box.add(create)
         box.add(spacer(Spacing.MD))
 
@@ -109,7 +120,7 @@ class WalletView:
             "Restore a wallet from a previously exported backup file.",
             style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY, padding=(0, 0, Spacing.MD, 0)),
         ))
-        import_card.add(secondary_button("Import Wallet File", _safe_async(self._import_file, "import")))
+        import_card.add(secondary_button("Import Wallet File", self._safe_async(self._import_file, "import")))
         box.add(import_card)
         box.add(spacer(Spacing.MD))
 
@@ -124,7 +135,7 @@ class WalletView:
             style=Pack(height=80, padding=(0, 0, Spacing.MD, 0)),
         )
         connect.add(self.mnemonic_input)
-        connect.add(primary_button("Connect Wallet", _safe_async(self._connect_mnemonic, "connect")))
+        connect.add(primary_button("Connect Wallet", self._safe_async(self._connect_mnemonic, "connect")))
         box.add(connect)
 
         return box
@@ -156,7 +167,7 @@ class WalletView:
         btn_row = toga.Box(style=Pack(direction=ROW))
         btn_row.add(primary_button("Refresh Balance", self._refresh_balance))
         btn_row.add(toga.Box(style=Pack(width=Spacing.SM)))
-        btn_row.add(secondary_button("Export Wallet", _safe_async(self._export, "export")))
+        btn_row.add(secondary_button("Export Wallet", self._safe_async(self._export, "export")))
         actions.add(btn_row)
 
         # Save status
@@ -173,17 +184,20 @@ class WalletView:
                     "Wallet not saved for auto-load",
                     style=Pack(font_size=Font.SIZE_SMALL, color=Colors.TEXT_MUTED, padding=(0, Spacing.SM, 0, 0)),
                 ))
-                save_row.add(secondary_button("Save for Auto-load", _safe_async(self._save_wallet, "save"), width=160))
+                save_row.add(secondary_button("Save for Auto-load", self._safe_async(self._save_wallet, "save"), width=160))
                 actions.add(save_row)
 
         box.add(actions)
         box.add(spacer(Spacing.MD))
 
         # Disconnect
-        box.add(danger_button("Disconnect Wallet", _safe_async(self._disconnect, "disconnect"), width=180))
+        box.add(danger_button("Disconnect Wallet", self._safe_async(self._disconnect, "disconnect"), width=180))
 
-        # Trigger async balance load
-        asyncio.create_task(self._load_balance())
+        # B-17: trigger balance load via bg_load (thread + safe_ui_call).
+        # The previous `spawn_task` path was vulnerable to gbulb scheduler
+        # starvation after a heavy GTK event burst (e.g. file upload),
+        # leaving the balance permanently stuck on "Loading...".
+        self._kick_balance_load()
 
         return box
 
@@ -333,18 +347,47 @@ class WalletView:
             self.app._show_wallet()
 
     def _refresh_balance(self, widget):
-        asyncio.create_task(self._load_balance())
+        self._kick_balance_load()
 
-    async def _load_balance(self):
+    def _kick_balance_load(self) -> None:
+        """Schedule a balance fetch in a background thread (B-17 safe).
+
+        See ``ViewLifecycle.bg_load`` for the rationale: a thread is
+        immune to the gbulb scheduling starvation that we hit when an
+        async ``loop.run_in_executor`` chain is created right after a
+        burst of GTK events (file upload + dialog dismissal).
+        """
         if not self.app.client or not self.balance_label:
             return
-        self.balance_label.text = "Loading..."
         try:
-            loop = asyncio.get_event_loop()
-            result, status = await loop.run_in_executor(None, self.app.client.get_wallet_balance)
+            self.balance_label.text = "Loading..."
+        except Exception:
+            pass
+        self.bg_load(
+            work_fn=self.app.client.get_wallet_balance,
+            ui_fn=self._on_balance_loaded,
+            error_ui_fn=self._on_balance_error,
+            name="load_balance",
+        )
+
+    def _on_balance_loaded(self, result_status: tuple) -> None:
+        try:
+            result, status = result_status
             if status == 200:
                 self.balance_label.text = f"{result.get('balance', 0)} BZT"
             else:
                 self.balance_label.text = f"Error: {result.get('error', 'unknown')}"
         except Exception as e:
             self.balance_label.text = f"Error: {e}"
+
+    def _on_balance_error(self, exc: Exception) -> None:
+        try:
+            self.balance_label.text = f"Error: {exc}"
+        except Exception:
+            pass
+
+    async def _load_balance(self):
+        """Legacy async loader kept for backward compatibility; routes
+        through the bg_load path so it benefits from the same fix.
+        """
+        self._kick_balance_load()

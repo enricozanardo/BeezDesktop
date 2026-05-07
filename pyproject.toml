@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.6.0"
+version = "0.6.4"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -39,7 +39,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.6.0"
+version = "0.6.4"
 url = "https://beez.io"
 license.file = "LICENSE"
 author = "Enrico Zanardo"
@@ -82,21 +82,26 @@ system_requires = [
 # macOS-specific configuration
 [tool.briefcase.app.beezdesktop.macOS]
 universal_build = true
+min_os_version = "11.0"
 
-# -- Code Signing & Notarization (requires Apple Developer Program, $99/yr) --
-# 1. Enroll at https://developer.apple.com/programs
-# 2. Create a "Developer ID Application" certificate in the Apple Developer portal
-# 3. Install the certificate in your macOS Keychain
-# 4. Uncomment and set the signing_identity below (find it with: security find-identity -v -p codesigning)
-# 5. For notarization, create an App Store Connect API key at:
-#    https://appstoreconnect.apple.com/access/api
-#    Then set these environment variables before running `briefcase package`:
-#      export BRIEFCASE_MACOS_NOTARIZE_ISSUER_ID="your-issuer-uuid"
-#      export BRIEFCASE_MACOS_NOTARIZE_KEY_ID="your-key-id"
-#      export BRIEFCASE_MACOS_NOTARIZE_KEY_FILE="/path/to/AuthKey_XXXX.p8"
+# Code signing + notarization for macOS are wired in
+# .github/workflows/build.yml (build-macos job). They are
+# OPT-IN at CI time: the workflow signs only when the
+# APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD secrets
+# are present in the repo, otherwise it falls back to
+# `briefcase package macOS --adhoc-sign` (development build,
+# Gatekeeper-blocked on other machines).
 #
-# signing_identity = "Developer ID Application: Enrico Zanardo (TEAM_ID)"
-# notarize_app = true
+# Required GitHub secrets for a signed + notarized build:
+#   APPLE_CERTIFICATE          -- base64 of the Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD -- export password used when creating the .p12
+#   APPLE_SIGNING_IDENTITY     -- e.g. "Developer ID Application: Enrico Zanardo (3W276Y84C2)"
+#   APPLE_TEAM_ID              -- "3W276Y84C2"
+#   APPLE_API_KEY_ID           -- App Store Connect API Key ID
+#   APPLE_API_ISSUER           -- App Store Connect API Issuer (UUID)
+#   APPLE_API_KEY_BASE64       -- base64 of the AuthKey_XXXX.p8 file
+#
+# See docs/MACOS_SIGNING.md for end-to-end setup + rotation steps.
 
 # Windows-specific configuration
 [tool.briefcase.app.beezdesktop.windows]

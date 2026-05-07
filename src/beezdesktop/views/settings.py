@@ -18,15 +18,16 @@ from beezdesktop.theme import (
     page_header, card, spacer,
     primary_button, secondary_button, danger_button,
 )
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.settings")
 
 
-class SettingsView:
+class SettingsView(ViewLifecycle):
     """Settings view for managing .beez network configuration."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self._config = None
         self._load_current_config()
 

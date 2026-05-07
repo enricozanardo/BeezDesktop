@@ -12,15 +12,16 @@ from toga.style.pack import COLUMN, ROW
 import asyncio
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.blockchain")
 
 
-class BlockchainView:
+class BlockchainView(ViewLifecycle):
     """Blockchain explorer view with auto-refresh."""
     
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.search_input = None
         self.info_labels = {}
         self.blocks_table = None
@@ -55,32 +56,43 @@ class BlockchainView:
         blocks_section = self._build_blocks_section()
         container.add(blocks_section)
         
-        # Load data
-        asyncio.create_task(self._load_blockchain_info())
-        asyncio.create_task(self._load_blocks())
-        
-        # Start auto-refresh
+        # B-17: load via thread (bg_load), not asyncio task. The previous
+        # spawn_task path was vulnerable to gbulb scheduler starvation
+        # after a heavy GTK event burst (e.g. file upload).
+        self._kick_info_load()
+        self._kick_blocks_load()
+
+        # Auto-refresh now also lives on a thread so it is independent
+        # of the asyncio scheduler.
         if self._auto_refresh_enabled:
-            self._refresh_task = asyncio.create_task(self._auto_refresh_loop())
-        
+            self._start_auto_refresh_thread()
+
         return container
-    
-    async def _auto_refresh_loop(self):
-        """Auto-refresh blockchain data periodically."""
-        try:
-            while self._auto_refresh_enabled:
-                await asyncio.sleep(self._auto_refresh_interval)
-                if not self._auto_refresh_enabled:
-                    break
+
+    def _start_auto_refresh_thread(self) -> None:
+        """B-17 safe periodic refresh implemented as a daemon thread.
+
+        Each tick uses ``bg_load`` for the actual fetch so the whole
+        chain is independent of the asyncio loop's scheduling.
+        """
+        import time
+
+        def loop_body() -> None:
+            while not self._destroyed and self._auto_refresh_enabled:
+                # Sleep first so we don't double-fire with the initial
+                # build-time loads.
+                for _ in range(self._auto_refresh_interval):
+                    if self._destroyed or not self._auto_refresh_enabled:
+                        return
+                    time.sleep(1)
                 try:
-                    await self._load_blockchain_info()
-                    # Only refresh blocks if on first page
+                    self._kick_info_load()
                     if self.current_offset == 0:
-                        await self._load_blocks()
+                        self._kick_blocks_load()
                 except Exception as e:
                     logger.error("[BLOCKCHAIN] Auto-refresh error: %s", e)
-        except asyncio.CancelledError:
-            pass  # Task cancelled on view switch -- expected
+
+        self.spawn_worker(loop_body, name="auto_refresh")
     
     def _build_info_section(self) -> toga.Box:
         """Build the blockchain info section."""
@@ -98,7 +110,7 @@ class BlockchainView:
         
         refresh_btn = toga.Button(
             "Refresh",
-            on_press=lambda w: asyncio.create_task(self._load_blockchain_info()),
+            on_press=lambda w: self._kick_info_load(),
             style=Pack(width=80, padding=(0, 5, 0, 0))
         )
         header_row.add(refresh_btn)
@@ -156,7 +168,7 @@ class BlockchainView:
         
         search_btn = toga.Button(
             "Search",
-            on_press=self._on_search,
+            on_press=self.wrap_handler(self._on_search, "search"),
             style=Pack(width=80)
         )
         search_row.add(search_btn)
@@ -215,81 +227,110 @@ class BlockchainView:
         
         return section
     
-    async def _load_blockchain_info(self):
-        """Load blockchain info from API."""
+    def _kick_info_load(self) -> None:
+        """B-17 safe info loader."""
         if not self.app.client:
             return
-        
-        loop = asyncio.get_event_loop()
-        result, status = await loop.run_in_executor(
-            None, self.app.client.get_blockchain_info
+        self.bg_load(
+            work_fn=self.app.client.get_blockchain_info,
+            ui_fn=self._on_info_loaded,
+            name="load_info",
         )
-        
+
+    def _on_info_loaded(self, result_status: tuple) -> None:
+        result, status = result_status
         if status == 200:
             blockchain = result.get("blockchain", result)
-            self.info_labels["block_height"].text = str(blockchain.get("current_block", "--"))
-            self.info_labels["mempool_size"].text = str(blockchain.get("mempool_size", "--"))
-            self.info_labels["total_wallets"].text = str(blockchain.get("total_wallets", "--"))
+            try:
+                self.info_labels["block_height"].text = str(blockchain.get("current_block", "--"))
+                self.info_labels["mempool_size"].text = str(blockchain.get("mempool_size", "--"))
+                self.info_labels["total_wallets"].text = str(blockchain.get("total_wallets", "--"))
+            except Exception as exc:
+                logger.error("[BLOCKCHAIN] Info display error: %s", exc)
         else:
             logger.error("[BLOCKCHAIN] Info error: %s", result.get('error', 'Unknown'))
-    
-    async def _load_blocks(self):
-        """Load blocks from API."""
+
+    def _kick_blocks_load(self) -> None:
+        """B-17 safe blocks loader."""
         if not self.app.client or not self.blocks_table:
             return
-        
-        loop = asyncio.get_event_loop()
-        result, status = await loop.run_in_executor(
-            None,
-            lambda: self.app.client.get_blocks(self.blocks_per_page, self.current_offset)
+        offset = self.current_offset
+        per_page = self.blocks_per_page
+
+        def fetch():
+            return self.app.client.get_blocks(per_page, offset)
+
+        self.bg_load(
+            work_fn=fetch,
+            ui_fn=self._on_blocks_loaded,
+            name="load_blocks",
         )
-        
-        self.blocks_table.data.clear()
+
+    def _on_blocks_loaded(self, result_status: tuple) -> None:
+        if not self.blocks_table:
+            return
+        result, status = result_status
+        try:
+            self.blocks_table.data.clear()
+        except Exception:
+            return
         self._block_heights = []
-        
+
         if status == 200:
             blocks = result.get("blocks", [])
-            
             for block in blocks:
                 height = str(block.get("height", block.get("block_height", "--")))
                 self._block_heights.append(height)
-                
+
                 block_hash = block.get("hash", block.get("block_hash", ""))
                 short_hash = f"{block_hash[:8]}...{block_hash[-8:]}" if len(block_hash) > 16 else block_hash
-                
+
                 timestamp = block.get("timestamp", "")
                 if isinstance(timestamp, dict):
                     timestamp = timestamp.get("timestamp", "")
                 if timestamp and len(str(timestamp)) > 19:
                     timestamp = str(timestamp)[:19]
-                
+
                 tx_count = block.get("tx_count", block.get("transaction_count", 0))
-                
+
                 self.blocks_table.data.append([
                     height,
                     short_hash,
                     str(tx_count),
                     str(timestamp)
                 ])
-            
-            # Update page label
+
             page_num = (self.current_offset // self.blocks_per_page) + 1
-            self.page_label.text = f"Page {page_num}"
+            try:
+                self.page_label.text = f"Page {page_num}"
+            except Exception:
+                pass
         else:
             error = result.get('error', 'Unknown')
             logger.error("[BLOCKCHAIN] Blocks error: %s", error)
-            self.blocks_table.data.append(["--", f"Error: {error[:30]}", "--", "--"])
-    
+            try:
+                self.blocks_table.data.append(["--", f"Error: {error[:30]}", "--", "--"])
+            except Exception:
+                pass
+
+    async def _load_blockchain_info(self):
+        """Legacy async loader -- routes through bg_load (B-17 safe)."""
+        self._kick_info_load()
+
+    async def _load_blocks(self):
+        """Legacy async loader -- routes through bg_load (B-17 safe)."""
+        self._kick_blocks_load()
+
     def _on_prev_page(self, widget):
         """Previous page of blocks."""
         if self.current_offset >= self.blocks_per_page:
             self.current_offset -= self.blocks_per_page
-            asyncio.create_task(self._load_blocks())
-    
+            self._kick_blocks_load()
+
     def _on_next_page(self, widget):
         """Next page of blocks."""
         self.current_offset += self.blocks_per_page
-        asyncio.create_task(self._load_blocks())
+        self._kick_blocks_load()
     
     def _on_block_selected(self, widget):
         """Handle block selection."""
@@ -317,7 +358,7 @@ class BlockchainView:
                     height = match.group(1)
 
             if height and str(height) not in ("--", "None", ""):
-                asyncio.create_task(self._show_block_details(str(height)))
+                self.spawn_task(self._show_block_details(str(height)), name="block_details")
         except (ValueError, AttributeError):
             # Silently ignore - happens when table data is refreshed during selection
             pass
@@ -348,7 +389,9 @@ class BlockchainView:
             None,
             lambda: self.app.client.get_block_by_height(int(height))
         )
-        
+        if self._destroyed:
+            return
+
         if status != 200:
             await self.app.main_window.dialog(
                 toga.ErrorDialog("Error", f"Failed to load block #{height}")
@@ -815,13 +858,17 @@ class BlockchainView:
             None,
             lambda: self.app.client.get_wallet_balance(address)
         )
-        
+        if self._destroyed:
+            return
+
         # Get transactions
         tx_result, tx_status = await loop.run_in_executor(
             None,
             lambda: self.app.client.get_wallet_transactions(address, 10, 0)
         )
-        
+        if self._destroyed or self.search_result_box is None:
+            return
+
         # Clear and show results
         for child in list(self.search_result_box.children):
             self.search_result_box.remove(child)
@@ -881,7 +928,7 @@ class BlockchainView:
                 # View button
                 view_btn = toga.Button(
                     "View",
-                    on_press=lambda w, t=tx: asyncio.create_task(self._show_tx_details(t)),
+                    on_press=lambda w, t=tx: self.spawn_task(self._show_tx_details(t), name="tx_details"),
                     style=Pack(width=50, height=25)
                 )
                 tx_row.add(view_btn)
@@ -900,7 +947,9 @@ class BlockchainView:
             None,
             lambda: self.app.client.get_transaction(tx_hash)
         )
-        
+        if self._destroyed or self.search_result_box is None:
+            return
+
         # Clear and show results
         for child in list(self.search_result_box.children):
             self.search_result_box.remove(child)

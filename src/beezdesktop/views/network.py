@@ -14,13 +14,14 @@ from beezdesktop.theme import (
     page_header, card, stat_card, status_badge, spacer,
     secondary_button, SearchableTable,
 )
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 
-class NetworkView:
+class NetworkView(ViewLifecycle):
     """Network status view."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
 
     def build(self) -> toga.Box:
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))

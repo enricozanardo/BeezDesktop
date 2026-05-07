@@ -90,14 +90,22 @@ def main() -> int:
     # ---- Smart node liveness (D-04, D-05 detector) ---------------------
     print("=== SMART probes ===")
     smart_results: dict[str, Any] = {}
+    listing_counts: dict[str, int] = {}
     for name, ip in SMARTS:
         info_st, info_body, info_err = http(name, "GET", f"http://{ip}:5000/info")
         ws_st, _, _ = http(name, "GET",
                             f"http://{ip}:5000/workspace/stats?wallet_address=bezPROBE")
-        mk_st, _, _ = http(name, "GET",
-                            f"http://{ip}:5000/marketplace/search?q=&limit=1")
-        smart_results[name] = {"info": info_st, "workspace_stats": ws_st,
-                                "marketplace_search": mk_st, "node_id": info_body.get("node_id") if isinstance(info_body, dict) else None}
+        mk_st, mk_body, _ = http(name, "GET",
+                            f"http://{ip}:5000/marketplace/search?q=&limit=100")
+        listing_count = 0
+        if isinstance(mk_body, dict):
+            listing_count = int(mk_body.get("count", 0) or 0)
+        listing_counts[name] = listing_count
+        smart_results[name] = {
+            "info": info_st, "workspace_stats": ws_st,
+            "marketplace_search": mk_st, "marketplace_count": listing_count,
+            "node_id": info_body.get("node_id") if isinstance(info_body, dict) else None,
+        }
         if info_st != 200 or not isinstance(info_body, dict):
             failures.append(f"smart:{name}:/info")
         if ws_st != 200:
@@ -105,6 +113,22 @@ def main() -> int:
         if mk_st != 200:
             failures.append(f"smart:{name}:/marketplace/search={mk_st}")
     artefact["smart"] = smart_results
+
+    # ---- B-16 marketplace replication detector -------------------------
+    # If at least one smart node sees listings, every smart node must see
+    # the SAME number (within tolerance), otherwise marketplace state is
+    # not being replicated and the desktop will hit "listing not found"
+    # depending on which node it picked.
+    if listing_counts:
+        max_seen = max(listing_counts.values())
+        min_seen = min(listing_counts.values())
+        if max_seen > 0 and (max_seen - min_seen) > 0:
+            failures.append(
+                f"smart:marketplace replication drift: counts={listing_counts} "
+                f"(B-16: knowledge_publish on one smart node is not propagated "
+                f"to the others)"
+            )
+    artefact["smart_marketplace_counts"] = listing_counts
 
     # ---- Chain liveness + Phase 7-G4 public health probe ---------------
     print("=== CHAIN probes ===")

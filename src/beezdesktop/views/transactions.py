@@ -17,15 +17,16 @@ from beezdesktop.theme import (
     primary_button, secondary_button,
     SearchableTable, LoadingIndicator,
 )
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.transactions")
 
 
-class TransactionsView:
+class TransactionsView(ViewLifecycle):
     """Transaction management view."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.recipient_input = None
         self.amount_input = None
         self._history_table = None
@@ -47,7 +48,12 @@ class TransactionsView:
         container.add(spacer(Spacing.SECTION_GAP))
         container.add(self._history_section())
 
-        asyncio.create_task(self._load_history())
+        # B-17: load history via thread (bg_load), not asyncio task.
+        # gbulb has been observed to leave create_task'd coroutines
+        # PENDING after a heavy GTK event burst (file upload), which
+        # left the history table empty even though the loop was alive
+        # enough to dispatch ``call_soon_threadsafe`` callbacks.
+        self._kick_history_load()
         return container
 
     def _send_section(self) -> toga.Box:
@@ -74,7 +80,7 @@ class TransactionsView:
         section.add(self.amount_input)
 
         btn_row = toga.Box(style=Pack(direction=ROW, alignment="center"))
-        btn_row.add(primary_button("Send Transaction", self._on_send))
+        btn_row.add(primary_button("Send Transaction", self.wrap_handler(self._on_send, "send")))
         self.status_label = toga.Label(
             "",
             style=Pack(padding=(0, 0, 0, Spacing.MD), font_size=Font.SIZE_SMALL, color=Colors.TEXT_SECONDARY),
@@ -94,7 +100,7 @@ class TransactionsView:
         ))
         header_row.add(secondary_button(
             "Refresh",
-            lambda w: asyncio.create_task(self._load_history()),
+            lambda w: self._kick_history_load(),
             width=100,
         ))
         section.add(header_row)
@@ -146,6 +152,8 @@ class TransactionsView:
             response, status = await loop.run_in_executor(
                 None, lambda: self.app.client.create_and_send_transaction(amount, recipient)
             )
+            if self._destroyed:
+                return
             if status in (200, 201, 202):
                 tx_hash = response.get('tx_hash', 'submitted')
                 self.status_label.text = f"\u2713 Sent: {tx_hash[:16]}..."
@@ -164,20 +172,36 @@ class TransactionsView:
             self.status_label.text = f"\u2717 Error: {e}"
             await self.app.main_window.dialog(toga.ErrorDialog("Error", f"Failed: {e}"))
 
-    async def _load_history(self):
+    def _kick_history_load(self) -> None:
+        """B-17 safe history loader. Runs the chain fetch in a thread.
+
+        We deliberately do NOT use ``spawn_task`` + ``run_in_executor``
+        because we have observed that pattern silently stop firing on
+        gbulb after a file upload burst.
+        """
         if not self.app.client or not self._history_table:
             return
         if not self.app.client.is_wallet_connected():
             return
 
-        self._loading.show("Loading transactions...")
-
-        loop = asyncio.get_event_loop()
         try:
-            result, status = await loop.run_in_executor(
-                None, lambda: self.app.client.get_wallet_transactions(None, 50, 0, "all")
-            )
+            self._loading.show("Loading transactions...")
+        except Exception:
+            pass
 
+        def fetch():
+            return self.app.client.get_wallet_transactions(None, 50, 0, "all")
+
+        self.bg_load(
+            work_fn=fetch,
+            ui_fn=self._on_history_loaded,
+            error_ui_fn=self._on_history_error,
+            name="load_history",
+        )
+
+    def _on_history_loaded(self, result_status: tuple) -> None:
+        try:
+            result, status = result_status
             rows = []
             if status == 200 and result:
                 transactions = result.get('transactions', []) or []
@@ -191,9 +215,23 @@ class TransactionsView:
 
             self._history_table.set_data(rows)
         except Exception as e:
-            logger.info(f"[TX] History exception: {e}")
+            logger.info(f"[TX] History display exception: {e}")
         finally:
+            try:
+                self._loading.hide()
+            except Exception:
+                pass
+
+    def _on_history_error(self, exc: Exception) -> None:
+        logger.info(f"[TX] History fetch exception: {exc}")
+        try:
             self._loading.hide()
+        except Exception:
+            pass
+
+    async def _load_history(self):
+        """Legacy async loader - routes through bg_load for B-17 safety."""
+        self._kick_history_load()
 
     def _format_tx_row(self, tx: dict, my_address: str) -> tuple:
         tx_type = tx.get('type', 'transfer') or 'transfer'

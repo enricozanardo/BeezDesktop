@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local-only ad-hoc reports written by scripts/prod_probe.py and friends.
+# These are diagnostic snapshots, not source.
+reports/

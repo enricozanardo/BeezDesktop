@@ -28,6 +28,7 @@ except ImportError as e:
 
 from beezdesktop import __version__
 from beezdesktop.theme import Colors, Font, Spacing, NAV_ICONS, SIDEBAR_WIDTH
+from beezdesktop.query_state import AppQueryStates
 
 
 class BeezDesktopApp(toga.App):
@@ -39,6 +40,10 @@ class BeezDesktopApp(toga.App):
         self.client = BeezClientCore(state=self.state) if BeezClientCore else None
         self.current_view = "dashboard"
         self._nav_buttons = {}
+        # B-15 fix: persistent query state survives view destruction so the
+        # answer to a long-running smart/knowledge query is still there
+        # when the user navigates back to the view.
+        self.query_states = AppQueryStates()
 
     def startup(self):
         """Initialize the application UI."""

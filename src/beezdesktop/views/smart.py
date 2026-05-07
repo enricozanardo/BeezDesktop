@@ -106,7 +106,59 @@ class SmartView(ViewLifecycle):
         # Load smart nodes from consensus
         self._load_smart_nodes()
 
+        # B-15: restore any in-flight or completed query that was started
+        # before this view instance existed (i.e. user navigated away and
+        # back). The worker thread keeps running across navigation; only
+        # the view is rebuilt.
+        self._restore_query_from_state()
+
         return container
+
+    def _restore_query_from_state(self) -> None:
+        """Pre-fill the query UI from the persistent app-level state."""
+        snap = self.app.query_states.smart.snapshot()
+        status = snap.get("status", "idle")
+        if status == "idle":
+            return
+
+        # Always restore the user's question text.
+        try:
+            self.query_input.value = snap.get("query_text", "")
+        except Exception:
+            pass
+
+        if status == "running":
+            self._set_busy(True, "Query running in background...")
+            self.query_btn.enabled = False
+            self.query_status.text = "Query running -- you may navigate away."
+            # Start a polling task that watches the state and updates the UI
+            # the moment the worker finishes. spawn_task ensures the poll
+            # is cancelled when this view is destroyed (a fresh build will
+            # spawn a new poll).
+            self.spawn_task(self._poll_query_state(), name="poll_query")
+        elif status == "done" and snap.get("result"):
+            self._display_result(snap["result"])
+        elif status == "error":
+            self._display_error(snap.get("error_msg") or "Unknown error")
+
+    async def _poll_query_state(self) -> None:
+        """Poll app.query_states.smart until status leaves ``running``."""
+        import asyncio as _asyncio
+        try:
+            while not self._destroyed:
+                await _asyncio.sleep(0.5)
+                snap = self.app.query_states.smart.snapshot()
+                if snap["status"] == "done" and snap.get("result"):
+                    self._display_result(snap["result"])
+                    return
+                if snap["status"] == "error":
+                    self._display_error(snap.get("error_msg") or "Unknown error")
+                    return
+                if snap["status"] == "idle":
+                    # User cleared the state externally; just stop.
+                    return
+        except _asyncio.CancelledError:
+            raise
 
     def _set_busy(self, busy: bool, message: str = "Loading..."):
         """Show/hide the loading indicator."""
@@ -372,6 +424,18 @@ class SmartView(ViewLifecycle):
         top_k = int(self.top_k_select.value or "5")
         query_text_clean = query_text.strip()
 
+        # B-15: mark query as running on the app-level state so a new
+        # SmartView instance built by navigating back can find it.
+        qstate = self.app.query_states.smart
+        qstate.begin(
+            query_text=query_text_clean,
+            extra={
+                "smart_node_id": node_snapshot.get("node_id", ""),
+                "smart_node_ip": node_snapshot.get("ip", ""),
+                "top_k": top_k,
+            },
+        )
+
         def do_query():
             try:
                 from shared.client_core.docker_mapping import resolve_node_address
@@ -419,9 +483,13 @@ class SmartView(ViewLifecycle):
                 except Exception as tx_err:
                     logger.error(f"[SMART VIEW] smart_query TX error: {tx_err}")
 
+                # Persist BEFORE notifying the (possibly dead) view.
+                qstate.succeed(result)
                 self.safe_ui_call(self._display_result, result)
             except Exception as e:
-                self.safe_ui_call(self._display_error, str(e))
+                err_msg = str(e)
+                qstate.fail(err_msg)
+                self.safe_ui_call(self._display_error, err_msg)
 
         self.spawn_worker(do_query, name="query")
 

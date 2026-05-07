@@ -18,6 +18,7 @@ import uuid
 from datetime import datetime, timedelta
 
 from beezdesktop.theme import Colors, Font, Spacing, page_header, LoadingIndicator
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 logger = logging.getLogger("beezdesktop.files")
 
@@ -34,29 +35,48 @@ except Exception as _e:
     InfoRow = None
 
 
-def safe_create_task(coro, name="unnamed"):
-    """Create an async task with error handling."""
+def safe_create_task(coro, name="unnamed", view=None):
+    """Create an async task with error handling.
+
+    If ``view`` is provided (and is a ``ViewLifecycle``), the task is
+    registered with the view so ``view.destroy()`` cancels it before
+    it can mutate any dead Toga widgets.
+    """
     async def wrapper():
         try:
             await coro
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error(f"[FILES][FILES] Task '{name}' error: {e}")
             import traceback
             traceback.print_exc()
+    if view is not None and hasattr(view, "spawn_task"):
+        return view.spawn_task(wrapper(), name=name)
     return asyncio.create_task(wrapper())
 
 
-def safe_async_handler(handler_func, name="unnamed"):
-    """Create a safe button handler that wraps an async function."""
+def safe_async_handler(handler_func, name="unnamed", view=None):
+    """Create a safe button handler that wraps an async function.
+
+    When ``view`` is given, the handler runs through ``view.spawn_task``
+    so navigation cancels in-flight handler tasks instead of letting
+    them complete and write to dead widgets.
+    """
     def wrapper(widget):
         async def inner():
             try:
                 await handler_func(widget)
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(f"[FILES][FILES] Handler '{name}' error: {e}")
                 import traceback
                 traceback.print_exc()
-        asyncio.create_task(inner())
+        if view is not None and hasattr(view, "spawn_task"):
+            view.spawn_task(inner(), name=name)
+        else:
+            asyncio.create_task(inner())
     return wrapper
 
 # Chunk size in bytes (1MB – aligned with BeezClient / pricing_config)
@@ -65,11 +85,11 @@ CHUNK_SIZE = 1024 * 1024  # 1MB
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB hard limit per upload
 
 
-class FilesView:
+class FilesView(ViewLifecycle):
     """File management view with Upload, My Files, Public Files, and Notifications tabs."""
     
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
         self.files_table = None
         self.public_files_table = None
         self.notifications_table = None
@@ -181,7 +201,7 @@ class FilesView:
         self._tab_container.add(self._upload_section)
         
         # Fetch location in background (with error handling)
-        safe_create_task(self._fetch_location(), "fetch_location")
+        safe_create_task(self._fetch_location(), "fetch_location", view=self)
         
         logger.debug("[FILES] View built successfully")
         return container
@@ -220,13 +240,19 @@ class FilesView:
         self._update_tab_buttons("upload")
     
     def _show_files_tab(self, widget):
-        """Switch to files tab."""
+        """Switch to files tab.
+
+        B-17: route the load through ``bg_load`` (thread) instead of
+        ``safe_create_task`` (asyncio task). The asyncio path was
+        observed to silently never fire after a file upload because
+        gbulb's scheduler stopped picking up newly created tasks.
+        """
         logger.debug("[FILES] Switching to My Files tab")
         self._tab_container.clear()
         self._tab_container.add(self._files_section)
         self._current_tab = "files"
         self._update_tab_buttons("files")
-        safe_create_task(self._load_files_async(), "load_files")
+        self._kick_files_refresh()
     
     def _show_public_tab(self, widget):
         """Switch to public files tab."""
@@ -235,7 +261,7 @@ class FilesView:
         self._tab_container.add(self._public_section)
         self._current_tab = "public"
         self._update_tab_buttons("public")
-        safe_create_task(self._load_public_files_async(), "load_public_files")
+        safe_create_task(self._load_public_files_async(), "load_public_files", view=self)
     
     def _show_notifications_tab(self, widget):
         """Switch to notifications tab."""
@@ -244,7 +270,7 @@ class FilesView:
         self._tab_container.add(self._notifications_section)
         self._current_tab = "notifications"
         self._update_tab_buttons("notifications")
-        safe_create_task(self._load_notifications_async(), "load_notifications")
+        safe_create_task(self._load_notifications_async(), "load_notifications", view=self)
     
     async def _fetch_location(self):
         """Fetch user's location via IP geolocation."""
@@ -294,7 +320,7 @@ class FilesView:
         
         select_btn = toga.Button(
             "Select File",
-            on_press=safe_async_handler(self._on_select_file, "select_file"),
+            on_press=safe_async_handler(self._on_select_file, "select_file", view=self),
             style=Pack(width=100)
         )
         file_row.add(select_btn)
@@ -477,7 +503,7 @@ class FilesView:
         
         upload_btn = toga.Button(
             "Upload to Network",
-            on_press=safe_async_handler(self._on_upload_file, "upload_file"),
+            on_press=safe_async_handler(self._on_upload_file, "upload_file", view=self),
             style=Pack(width=150)
         )
         upload_row.add(upload_btn)
@@ -936,7 +962,7 @@ class FilesView:
         # Debug button to test API
         debug_btn = toga.Button(
             "Test API",
-            on_press=safe_async_handler(self._on_test_api, "test_api"),
+            on_press=safe_async_handler(self._on_test_api, "test_api", view=self),
             style=Pack(width=70, padding=(0, 5, 0, 0))
         )
         header_row.add(debug_btn)
@@ -990,35 +1016,35 @@ class FilesView:
         
         preview_btn = toga.Button(
             "Preview",
-            on_press=safe_async_handler(self._on_preview_file, "preview_file"),
+            on_press=safe_async_handler(self._on_preview_file, "preview_file", view=self),
             style=Pack(width=80, padding=(0, 5, 0, 0))
         )
         actions_row.add(preview_btn)
         
         download_btn = toga.Button(
             "Download",
-            on_press=safe_async_handler(self._on_download_file, "download_file"),
+            on_press=safe_async_handler(self._on_download_file, "download_file", view=self),
             style=Pack(width=90, padding=(0, 5, 0, 0))
         )
         actions_row.add(download_btn)
         
         self._update_price_btn = toga.Button(
             "Update Price",
-            on_press=safe_async_handler(self._on_update_price, "update_price"),
+            on_press=safe_async_handler(self._on_update_price, "update_price", view=self),
             style=Pack(width=100, padding=(0, 5, 0, 0))
         )
         actions_row.add(self._update_price_btn)
         
         self._toggle_vis_btn = toga.Button(
             "Toggle Visibility",
-            on_press=safe_async_handler(self._on_toggle_visibility, "toggle_visibility"),
+            on_press=safe_async_handler(self._on_toggle_visibility, "toggle_visibility", view=self),
             style=Pack(width=120, padding=(0, 5, 0, 0))
         )
         actions_row.add(self._toggle_vis_btn)
 
         self._edit_tags_btn = toga.Button(
             "Edit Tags",
-            on_press=safe_async_handler(self._on_edit_tags, "edit_tags"),
+            on_press=safe_async_handler(self._on_edit_tags, "edit_tags", view=self),
             style=Pack(width=80, padding=(0, 5, 0, 0))
         )
         actions_row.add(self._edit_tags_btn)
@@ -1030,14 +1056,14 @@ class FilesView:
         
         self._transfer_btn = toga.Button(
             "Transfer Ownership",
-            on_press=safe_async_handler(self._on_transfer_ownership, "transfer_ownership"),
+            on_press=safe_async_handler(self._on_transfer_ownership, "transfer_ownership", view=self),
             style=Pack(width=140, padding=(0, 5, 0, 0), background_color="#ff9800")
         )
         actions_row2.add(self._transfer_btn)
         
         self._lightning_btn = toga.Button(
             "Lightning Transfer",
-            on_press=safe_async_handler(self._on_lightning_transfer, "lightning_transfer"),
+            on_press=safe_async_handler(self._on_lightning_transfer, "lightning_transfer", view=self),
             style=Pack(width=140, padding=(0, 5, 0, 0), background_color="#f44336")
         )
         actions_row2.add(self._lightning_btn)
@@ -1050,9 +1076,99 @@ class FilesView:
         return section
     
     def _on_refresh_files(self, widget):
-        """Refresh the files list."""
+        """Refresh the files list.
+
+        B-17: route the chain fetch through ``bg_load`` (thread) instead
+        of an asyncio Task. After a file upload the gbulb scheduler has
+        been observed to leave newly created tasks PENDING indefinitely.
+        ``bg_load`` is independent of asyncio scheduling and always
+        runs.
+        """
         logger.debug("[FILES] Refresh button pressed")
-        safe_create_task(self._load_files_async(), "refresh_files")
+        self._kick_files_refresh()
+
+    def _kick_files_refresh(self) -> None:
+        """B-17 safe entrypoint for "refresh My Files"."""
+        if not self.app.client or not self.files_table:
+            logger.warning("[FILES] _kick_files_refresh: client/table missing")
+            return
+        if not self.app.client.is_wallet_connected():
+            logger.info("[FILES] _kick_files_refresh: wallet not connected")
+            return
+        try:
+            self._set_busy(True, "Loading your files...")
+        except Exception:
+            pass
+
+        chain_nodes = self.app.client.get_chain_nodes()
+
+        def fetch():
+            # Match _load_files_async's behaviour: tolerate a brief
+            # window where consensus has not yet handed us chain nodes.
+            import time as _time
+            cn = chain_nodes
+            for _ in range(5):
+                if cn:
+                    break
+                _time.sleep(1)
+                cn = self.app.client.get_chain_nodes()
+            if not cn:
+                return ("no_chain_nodes", None, None)
+            uploads = self.app.client.get_user_uploads()
+            try:
+                pending_result, pending_status = self.app.client.get_pending_ownership_requests()
+            except Exception as pe:
+                logger.error(f"[FILES][FILES] Error fetching pending transfers: {pe}")
+                pending_result, pending_status = ({}, 0)
+            return ("ok", uploads, (pending_result, pending_status))
+
+        self.bg_load(
+            work_fn=fetch,
+            ui_fn=self._on_files_refresh_loaded,
+            error_ui_fn=self._on_files_refresh_error,
+            name="refresh_files",
+        )
+
+    def _on_files_refresh_loaded(self, payload) -> None:
+        """UI-thread continuation of _kick_files_refresh."""
+        try:
+            tag, uploads, pending = payload
+        except Exception as exc:
+            logger.error(f"[FILES] refresh payload malformed: {exc}")
+            self._set_busy(False)
+            return
+
+        if tag == "no_chain_nodes":
+            try:
+                self.files_table.data.clear()
+                self.files_table.data.append([
+                    "Error", "No chain nodes", "--", "--", "--", "--", "Wait for network"
+                ])
+            except Exception:
+                pass
+            self._set_busy(False)
+            return
+
+        try:
+            self._populate_files_table(uploads or [], pending)
+        except Exception as e:
+            logger.error(f"[FILES][FILES] Error rendering files: {e}")
+            try:
+                self.files_table.data.clear()
+                self.files_table.data.append([
+                    "Error", str(e)[:30], "--", "--", "--", "--", "Check console"
+                ])
+            except Exception:
+                pass
+        finally:
+            self._set_busy(False)
+
+    def _on_files_refresh_error(self, exc: Exception) -> None:
+        logger.error(f"[FILES] refresh failed: {exc}")
+        try:
+            self._set_busy(False)
+        except Exception:
+            pass
     
     async def _on_test_api(self, widget):
         """Test API connection and show diagnostic info."""
@@ -1168,7 +1284,7 @@ class FilesView:
     
     def _on_file_double_click(self, widget, row):
         """Handle double-click to preview file."""
-        safe_create_task(self._on_preview_file(widget), "preview_on_double_click")
+        safe_create_task(self._on_preview_file(widget), "preview_on_double_click", view=self)
     
     def _show_file_details(self, file_data: dict):
         """Show detailed information about a file (selectable text)."""
@@ -1455,7 +1571,7 @@ class FilesView:
 
         save_btn = toga.Button(
             "Save",
-            on_press=safe_async_handler(on_save, "save_price"),
+            on_press=safe_async_handler(on_save, "save_price", view=self),
             style=Pack(width=80, padding=(0, 10, 0, 0), background_color="#4CAF50")
         )
         btn_box.add(save_btn)
@@ -1567,7 +1683,7 @@ class FilesView:
 
         save_btn = toga.Button(
             "Save",
-            on_press=safe_async_handler(on_save, "save_tags"),
+            on_press=safe_async_handler(on_save, "save_tags", view=self),
             style=Pack(width=80, padding=(0, 10, 0, 0), background_color="#4CAF50")
         )
         btn_box.add(save_btn)
@@ -1863,7 +1979,7 @@ class FilesView:
         
         submit_btn = toga.Button(
             "Submit Transfer",
-            on_press=safe_async_handler(on_submit, "submit_transfer"),
+            on_press=safe_async_handler(on_submit, "submit_transfer", view=self),
             style=Pack(width=120, padding=(0, 10, 0, 0), background_color="#4CAF50")
         )
         button_box.add(submit_btn)
@@ -2016,7 +2132,7 @@ class FilesView:
 
         create_btn = toga.Button(
             "Create Offer",
-            on_press=safe_async_handler(on_create_offer, "create_lightning_offer"),
+            on_press=safe_async_handler(on_create_offer, "create_lightning_offer", view=self),
             style=Pack(width=120, padding=(0, 10, 0, 0), background_color="#f44336")
         )
         button_box.add(create_btn)
@@ -2150,7 +2266,7 @@ class FilesView:
 
         accept_btn = toga.Button(
             "Accept & Submit",
-            on_press=safe_async_handler(on_accept, "accept_lightning_offer"),
+            on_press=safe_async_handler(on_accept, "accept_lightning_offer", view=self),
             style=Pack(width=140, padding=(0, 10, 0, 0), background_color="#4CAF50")
         )
         button_box.add(accept_btn)
@@ -2328,7 +2444,81 @@ class FilesView:
                 ])
         finally:
             self._set_busy(False)
-    
+
+    def _populate_files_table(self, uploads, pending) -> None:
+        """B-17 helper: render the My Files table from a fetched payload.
+
+        ``uploads`` is the raw list returned by
+        ``BeezClient.get_user_uploads()``. ``pending`` is either ``None``
+        or the ``(result, status)`` pair from
+        ``get_pending_ownership_requests``.
+        """
+        wallet = self.app.client.get_current_wallet() if self.app.client else None
+        self._my_files_data = uploads or []
+        self.files_table.data.clear()
+
+        if not uploads:
+            wallet_addr = wallet.address if wallet else "unknown"
+            self.files_table.data.append([
+                "No files", f"Wallet: {wallet_addr[:20]}...", "--", "--", "--", "--", "Upload a file first"
+            ])
+            return
+
+        pending_file_ids = set()
+        if pending is not None:
+            try:
+                pending_result, pending_status = pending
+                if pending_status == 200 and isinstance(pending_result, dict):
+                    for req in pending_result.get("outgoing", []):
+                        if req.get("status") == "pending":
+                            pending_file_ids.add(req.get("file_id"))
+                    for req in pending_result.get("incoming", []):
+                        if req.get("status") == "pending":
+                            pending_file_ids.add(req.get("file_id"))
+            except Exception as pe:
+                logger.error(f"[FILES][FILES] Error parsing pending transfers: {pe}")
+
+        for upload in uploads:
+            if upload is None:
+                continue
+            file_name = upload.get("file_name", "Unknown")
+            file_size = upload.get("file_size", 0)
+            visibility = upload.get("visibility", "private")
+            price = upload.get("price", upload.get("marketplace_price", "0"))
+            file_id = upload.get("file_id", "")
+
+            storage_duration = upload.get("storage_duration", 5)
+            created_at = upload.get("created_at", "")
+            if created_at:
+                try:
+                    created_date = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    expiration = created_date + timedelta(days=storage_duration * 365)
+                    expiration_str = expiration.strftime("%Y-%m-%d")
+                except Exception:
+                    expiration_str = f"+{storage_duration}y"
+            else:
+                expiration_str = f"+{storage_duration}y"
+
+            block_height = upload.get("block_height", "Pending")
+            status = upload.get("status", "confirmed")
+
+            if file_id in pending_file_ids:
+                status_display = "🔒 Transfer Pending"
+            elif status == "confirmed":
+                status_display = "✓ Confirmed"
+            else:
+                status_display = "⏳ Pending"
+
+            self.files_table.data.append([
+                file_name[:25] + "..." if len(file_name) > 25 else file_name,
+                f"{file_size:,}" if file_size else "--",
+                visibility,
+                f"{price}" if price and price != "0" else "Free",
+                expiration_str,
+                str(block_height) if block_height else "Pending",
+                status_display
+            ])
+
     # =========================================================================
     # PUBLIC FILES SECTION
     # =========================================================================
@@ -2434,21 +2624,21 @@ class FilesView:
 
         preview_btn = toga.Button(
             "View Preview",
-            on_press=safe_async_handler(self._on_preview_public_file, "preview_public"),
+            on_press=safe_async_handler(self._on_preview_public_file, "preview_public", view=self),
             style=Pack(width=100, padding=(0, 5, 0, 0))
         )
         actions_row.add(preview_btn)
 
         history_btn = toga.Button(
             "View History",
-            on_press=safe_async_handler(self._on_view_history, "view_history"),
+            on_press=safe_async_handler(self._on_view_history, "view_history", view=self),
             style=Pack(width=100, padding=(0, 5, 0, 0))
         )
         actions_row.add(history_btn)
 
         request_btn = toga.Button(
             "Request Ownership",
-            on_press=safe_async_handler(self._on_request_ownership, "request_ownership"),
+            on_press=safe_async_handler(self._on_request_ownership, "request_ownership", view=self),
             style=Pack(width=140, padding=(0, 5, 0, 0), background_color="#2196F3")
         )
         actions_row.add(request_btn)
@@ -2460,12 +2650,12 @@ class FilesView:
     def _on_search_public(self, widget):
         """Search public files."""
         logger.debug("[FILES] Search public files")
-        safe_create_task(self._load_public_files_async(), "search_public")
+        safe_create_task(self._load_public_files_async(), "search_public", view=self)
     
     def _on_refresh_public(self, widget):
         """Refresh public files."""
         logger.debug("[FILES] Refresh public files")
-        safe_create_task(self._load_public_files_async(), "refresh_public")
+        safe_create_task(self._load_public_files_async(), "refresh_public", view=self)
     
     def _on_public_file_selected(self, widget):
         """Handle public file selection."""
@@ -2488,7 +2678,7 @@ class FilesView:
     
     def _on_public_file_double_click(self, widget, row):
         """Handle double-click on public file - show preview."""
-        safe_create_task(self._on_preview_public_file(widget), "preview_public_double_click")
+        safe_create_task(self._on_preview_public_file(widget), "preview_public_double_click", view=self)
     
     def _show_public_file_details(self, file_data: dict):
         """Show public file details (selectable text)."""
@@ -2870,7 +3060,7 @@ class FilesView:
 
         lightning_accept_btn = toga.Button(
             "Accept Lightning Offer",
-            on_press=safe_async_handler(self._on_accept_lightning_offer, "accept_lightning"),
+            on_press=safe_async_handler(self._on_accept_lightning_offer, "accept_lightning", view=self),
             style=Pack(width=180, padding=(0, 0, 0, 10), background_color="#4CAF50")
         )
         header_row.add(lightning_accept_btn)
@@ -2896,21 +3086,21 @@ class FilesView:
         
         preview_offer_btn = toga.Button(
             "Preview",
-            on_press=safe_async_handler(self._on_preview_incoming, "preview_incoming"),
+            on_press=safe_async_handler(self._on_preview_incoming, "preview_incoming", view=self),
             style=Pack(width=80, padding=(0, 5, 0, 0))
         )
         incoming_actions.add(preview_offer_btn)
         
         accept_btn = toga.Button(
             "Accept",
-            on_press=safe_async_handler(self._on_accept_request, "accept_request"),
+            on_press=safe_async_handler(self._on_accept_request, "accept_request", view=self),
             style=Pack(width=80, padding=(0, 5, 0, 0), background_color="#4CAF50")
         )
         incoming_actions.add(accept_btn)
         
         reject_btn = toga.Button(
             "Reject",
-            on_press=safe_async_handler(self._on_reject_request, "reject_request"),
+            on_press=safe_async_handler(self._on_reject_request, "reject_request", view=self),
             style=Pack(width=80, padding=(0, 5, 0, 0), background_color="#f44336")
         )
         incoming_actions.add(reject_btn)
@@ -2936,7 +3126,7 @@ class FilesView:
         
         cancel_btn = toga.Button(
             "Cancel Request",
-            on_press=safe_async_handler(self._on_cancel_request, "cancel_request"),
+            on_press=safe_async_handler(self._on_cancel_request, "cancel_request", view=self),
             style=Pack(width=120, padding=(0, 5, 0, 0), background_color="#ff9800")
         )
         outgoing_actions.add(cancel_btn)
@@ -2955,7 +3145,7 @@ class FilesView:
     def _on_refresh_notifications(self, widget):
         """Refresh notifications."""
         logger.debug("[FILES] Refresh notifications")
-        safe_create_task(self._load_notifications_async(), "refresh_notifications")
+        safe_create_task(self._load_notifications_async(), "refresh_notifications", view=self)
     
     def _on_incoming_selected(self, widget):
         """Handle incoming request selection."""

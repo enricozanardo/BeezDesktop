@@ -152,9 +152,29 @@ class KnowledgeView(ViewLifecycle):
             )
             container.add(self.status_label)
 
-            # Load smart nodes (in-memory) and show browse tab (no auto-search)
+            # Load smart nodes (in-memory)
             self._load_smart_nodes()
-            self._show_browse_tab(None)
+
+            # B-18: rehydrate cached listings + selection from app state
+            # BEFORE we open any tab so all tab handlers see the same
+            # in-memory snapshot the user had before navigating away.
+            self._rehydrate_browse_state_into_view()
+
+            # B-18: re-open the tab the user left off on. Default is
+            # Browse the very first time the view is built.
+            try:
+                last_tab = self.app.query_states.knowledge_browse.snapshot().get(
+                    "active_tab", "browse"
+                )
+            except Exception:
+                last_tab = "browse"
+            tab_dispatcher = {
+                "browse": self._show_browse_tab,
+                "query": self._show_query_tab,
+                "publish": self._show_publish_tab,
+                "my_listings": self._show_my_listings_tab,
+            }
+            (tab_dispatcher.get(last_tab) or self._show_browse_tab)(None)
 
             # Warm up fastembed model in the background once Knowledge is opened
             # for the first time. Subsequent queries skip the heavy load.
@@ -180,6 +200,33 @@ class KnowledgeView(ViewLifecycle):
                 self._loading.hide()
         except Exception:
             pass
+
+    def _rehydrate_browse_state_into_view(self) -> None:
+        """B-18: copy persisted browse state from app onto this view.
+
+        We only restore the python-level data here (``self.listings``,
+        ``self.selected_listing``, ``self._selected_listing_idx``). The
+        actual widget population happens later, inside whichever tab
+        builder runs (``_show_browse_tab`` re-renders the table,
+        ``_show_query_tab`` re-populates the listing selector).
+        """
+        try:
+            snap = self.app.query_states.knowledge_browse.snapshot()
+        except Exception:
+            return
+
+        cached_listings = snap.get("listings") or []
+        if cached_listings:
+            self.listings = list(cached_listings)
+
+        cached_sel = snap.get("selected_listing")
+        if cached_sel and self.listings:
+            target_id = cached_sel.get("listing_id")
+            for i, ls in enumerate(self.listings):
+                if ls.get("listing_id") == target_id:
+                    self._selected_listing_idx = i
+                    self.selected_listing = self.listings[i]
+                    break
 
     # === UI Builders ===
 
@@ -234,7 +281,21 @@ class KnowledgeView(ViewLifecycle):
             self.tab_content.clear()
         except Exception:
             return
+        # B-18: remember which tab is active so the next view rebuild
+        # opens to the same place the user left off.
+        try:
+            self.app.query_states.knowledge_browse.set_active_tab("browse")
+        except Exception:
+            pass
         box = toga.Box(style=Pack(direction=COLUMN))
+
+        # B-18: restore previously persisted search inputs so the user
+        # sees the same query they ran before navigating away.
+        snap = {}
+        try:
+            snap = self.app.query_states.knowledge_browse.snapshot()
+        except Exception:
+            snap = {}
 
         # Search row
         search_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
@@ -242,12 +303,20 @@ class KnowledgeView(ViewLifecycle):
             placeholder="Search knowledge collections...",
             style=Pack(flex=1, padding_right=10),
         )
+        try:
+            self.search_input.value = snap.get("search_query", "") or ""
+        except Exception:
+            pass
         search_row.add(self.search_input)
 
         self.tag_input = toga.TextInput(
             placeholder="Tags (comma-separated)",
             style=Pack(width=180, padding_right=10),
         )
+        try:
+            self.tag_input.value = snap.get("search_tags", "") or ""
+        except Exception:
+            pass
         search_row.add(self.tag_input)
 
         search_btn = toga.Button(
@@ -295,12 +364,51 @@ class KnowledgeView(ViewLifecycle):
         box.add(detail_row)
         self.tab_content.add(box)
 
+        # B-18: replay cached listings into the freshly built widgets.
+        # ``self.listings`` was already restored from app state by
+        # ``_rehydrate_browse_state_into_view`` in build(). Here we
+        # only need to push them into the table and re-render the
+        # selection details.
+        if self.listings:
+            self._render_browse_table_from_listings()
+            self.status_label.text = (
+                f"Restored {len(self.listings)} cached listings "
+                "(click Search to refresh)."
+            )
+
+        if self.selected_listing:
+            listing = self.selected_listing
+            desc = listing.get("description", "")[:120]
+            tags = ", ".join(listing.get("tags", []))
+            try:
+                self.listing_detail_label.text = (
+                    f"{desc}{'...' if len(listing.get('description', '')) > 120 else ''}"
+                    f" | Tags: {tags or 'none'}"
+                )
+                self.query_listing_btn.enabled = True
+                pp = float(listing.get("purchase_price", 0))
+                is_own = False
+                try:
+                    wallet = self.app.client.get_current_wallet()
+                    if wallet and listing.get("seller_address") == wallet.address:
+                        is_own = True
+                except Exception:
+                    pass
+                self.buy_listing_btn.enabled = pp > 0 and not is_own
+            except Exception:
+                pass
+
     def _show_query_tab(self, widget):
         """Show the Query a Listing tab."""
         try:
             self.tab_content.clear()
         except Exception:
             return
+        # B-18: persist active tab.
+        try:
+            self.app.query_states.knowledge_browse.set_active_tab("query")
+        except Exception:
+            pass
         box = toga.Box(style=Pack(direction=COLUMN))
 
         # Listing selector
@@ -356,12 +464,74 @@ class KnowledgeView(ViewLifecycle):
         # Populate listing selector if we have listings
         self._populate_query_listing_select()
 
+        # B-15: restore any in-flight or completed query so that navigating
+        # away from Knowledge mid-query and coming back still shows the
+        # answer (or progress indicator) instead of a blank UI.
+        self._restore_query_from_state()
+
+    def _restore_query_from_state(self) -> None:
+        """Pre-fill query UI from the persistent app-level state."""
+        snap = self.app.query_states.knowledge.snapshot()
+        status = snap.get("status", "idle")
+        if status == "idle":
+            return
+
+        try:
+            self.query_input.value = snap.get("query_text", "")
+        except Exception:
+            pass
+
+        if status == "running":
+            self._set_busy(True, "Query running in background...")
+            try:
+                self.ask_btn.enabled = False
+            except Exception:
+                pass
+            try:
+                self.query_cost_label.text = "Query running -- you may navigate away."
+            except Exception:
+                pass
+            self.spawn_task(self._poll_marketplace_query_state(), name="poll_query")
+        elif status == "done" and snap.get("result"):
+            tx_msg = snap.get("extra", {}).get("tx_msg", "")
+            self._apply_marketplace_query_result(snap["result"], tx_msg)
+        elif status == "error":
+            self._on_marketplace_error("Query", snap.get("error_msg") or "Unknown error")
+            self._reenable_ask_btn()
+
+    async def _poll_marketplace_query_state(self) -> None:
+        """Poll app.query_states.knowledge until status leaves running."""
+        import asyncio as _asyncio
+        try:
+            while not self._destroyed:
+                await _asyncio.sleep(0.5)
+                snap = self.app.query_states.knowledge.snapshot()
+                if snap["status"] == "done" and snap.get("result"):
+                    tx_msg = snap.get("extra", {}).get("tx_msg", "")
+                    self._apply_marketplace_query_result(snap["result"], tx_msg)
+                    return
+                if snap["status"] == "error":
+                    self._on_marketplace_error(
+                        "Query", snap.get("error_msg") or "Unknown error"
+                    )
+                    self._reenable_ask_btn()
+                    return
+                if snap["status"] == "idle":
+                    return
+        except _asyncio.CancelledError:
+            raise
+
     def _show_publish_tab(self, widget):
         """Show the Publish Knowledge tab."""
         try:
             self.tab_content.clear()
         except Exception:
             return
+        # B-18: persist active tab.
+        try:
+            self.app.query_states.knowledge_browse.set_active_tab("publish")
+        except Exception:
+            pass
         box = toga.Box(style=Pack(direction=COLUMN))
 
         box.add(toga.Label("Publish Knowledge Collection", style=Pack(padding=(0, 0, 10, 0), font_weight="bold")))
@@ -453,6 +623,11 @@ class KnowledgeView(ViewLifecycle):
             self.tab_content.clear()
         except Exception:
             return
+        # B-18: persist active tab.
+        try:
+            self.app.query_states.knowledge_browse.set_active_tab("my_listings")
+        except Exception:
+            pass
         box = toga.Box(style=Pack(direction=COLUMN))
 
         header_row = toga.Box(style=Pack(direction=ROW, padding=(0, 0, 10, 0)))
@@ -591,9 +766,41 @@ class KnowledgeView(ViewLifecycle):
         """Render search results - main thread only via safe_ui_call."""
         self._set_busy(False)
         self.listings = list(results)
+
+        # B-18: persist on the app so we can re-hydrate this exact list
+        # after the view is destroyed and rebuilt.
+        try:
+            search_query = ""
+            search_tags = ""
+            si = getattr(self, "search_input", None)
+            if si is not None and si.value:
+                search_query = si.value
+            ti = getattr(self, "tag_input", None)
+            if ti is not None and ti.value:
+                search_tags = ti.value
+            self.app.query_states.knowledge_browse.set_listings(
+                self.listings,
+                search_query=search_query,
+                search_tags=search_tags,
+            )
+        except Exception as exc:
+            logger.debug(f"[KNOWLEDGE] persist listings failed: {exc}")
+
+        self._render_browse_table_from_listings()
+        self.status_label.text = f"Found {len(results)} listings"
+        self._clear_reachability_warning()
+
+    def _render_browse_table_from_listings(self) -> None:
+        """Push self.listings into the Browse table widget.
+
+        Pulled out so the persisted snapshot can be replayed on view
+        rebuild (B-18) without going through the network again.
+        """
+        if not getattr(self, "browse_table", None):
+            return
         data = []
         self._browse_listing_ids = []
-        for r in results:
+        for r in self.listings:
             data.append((
                 r.get("title", "Untitled"),
                 (r.get("seller_address", "")[:12] + "...") if r.get("seller_address") else "?",
@@ -607,8 +814,6 @@ class KnowledgeView(ViewLifecycle):
             self.browse_table.data = data
         except Exception:
             pass
-        self.status_label.text = f"Found {len(results)} listings"
-        self._clear_reachability_warning()
 
     def _on_browse_select(self, widget):
         """Handle browse table row selection."""
@@ -641,6 +846,12 @@ class KnowledgeView(ViewLifecycle):
 
             self._selected_listing_idx = matched_idx
             listing = self.listings[matched_idx]
+            self.selected_listing = listing
+            # B-18: persist the selection so view rebuild restores it.
+            try:
+                self.app.query_states.knowledge_browse.set_selected(listing)
+            except Exception:
+                pass
             self.query_listing_btn.enabled = True
 
             desc = listing.get("description", "")[:120]
@@ -746,6 +957,18 @@ class KnowledgeView(ViewLifecycle):
         wallet_privkey = wallet.privkey.hex()
         wallet_pubkey = wallet.get_pubkey_hex()
 
+        # B-15: persist the in-flight query so a re-built view can find it.
+        qstate = self.app.query_states.knowledge
+        qstate.begin(
+            query_text=q_text,
+            extra={
+                "listing_id": listing.get("listing_id", ""),
+                "listing_title": listing.get("title", ""),
+                "smart_node_id": smart_node_id,
+                "smart_node_label": self.selected_smart_node.get("ip", "this smart node"),
+            },
+        )
+
         def do_query():
             try:
                 from shared.client_core.knowledge_client import (
@@ -790,10 +1013,17 @@ class KnowledgeView(ViewLifecycle):
                 except Exception as tx_err:
                     logger.error(f"[KNOWLEDGE] TX error: {tx_err}")
 
+                # Persist BEFORE notifying the (possibly dead) view.
+                # Stash tx_msg in extra so a fresh view rebuild can show it.
+                snap_extra = qstate.snapshot().get("extra", {})
+                snap_extra["tx_msg"] = tx_msg
+                qstate.extra = snap_extra
+                qstate.succeed(result)
                 self.safe_ui_call(self._apply_marketplace_query_result, result, tx_msg)
 
             except Exception as e:
                 error_msg = str(e)
+                qstate.fail(error_msg)
                 self.safe_ui_call(self._on_marketplace_error, "Query", error_msg)
                 self.safe_ui_call(self._reenable_ask_btn)
 
@@ -1214,9 +1444,18 @@ class KnowledgeView(ViewLifecycle):
     # ------------------------------------------------------------------
 
     def _on_marketplace_error(self, op: str, err: str) -> None:
-        """Surface marketplace worker errors. Connection errors update the
-        reachability banner so the user knows it's a network issue, not a
-        UI bug. Other errors go to the status label.
+        """Surface marketplace worker errors. Distinguishes between:
+
+        - real reachability problems (node down, connection refused, timeout)
+          -> "Smart node unreachable" banner
+        - listing-not-found-on-this-node (a different smart node has the
+          listing because marketplace data isn't replicated yet)
+          -> "Listing not on this node" banner
+        - everything else -> generic status line.
+
+        This was the B-15 confusion: any error from the picked smart node
+        was labelled "unreachable" even when the node was healthy and the
+        real issue was that the listing lived on a sibling node.
         """
         self._set_busy(False)
         try:
@@ -1224,21 +1463,30 @@ class KnowledgeView(ViewLifecycle):
         except Exception:
             pass
 
-        lower = err.lower()
-        is_conn_err = any(
-            tok in lower for tok in (
-                "connection", "timed out", "timeout", "max retries",
-                "name or service", "unreachable", "refused",
+        from beezdesktop.query_state import classify_smart_node_error
+        kind = classify_smart_node_error(err)
+        smart_label = (self.selected_smart_node or {}).get("ip", "this smart node")
+        if kind == "unreachable":
+            self._show_reachability_warning(
+                f"[!] {smart_label} is unreachable. Pick another smart node above."
             )
-        )
-        if is_conn_err:
-            self._show_reachability_warning()
+        elif kind == "not_found":
+            self._show_reachability_warning(
+                f"[!] This listing isn't available on {smart_label}. "
+                "Marketplace data may not be replicated yet -- pick another "
+                "smart node above and retry."
+            )
+        elif kind in ("auth", "server"):
+            self._show_reachability_warning(
+                f"[!] {smart_label} returned an error ({kind}). "
+                "Try another smart node or contact support."
+            )
 
-    def _show_reachability_warning(self) -> None:
+    def _show_reachability_warning(self, message: str | None = None) -> None:
         if self._reachability_label is None:
             return
         try:
-            self._reachability_label.text = (
+            self._reachability_label.text = message or (
                 "[!] Smart node unreachable. Check the node status or pick "
                 "another smart node above."
             )

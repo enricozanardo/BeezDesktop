@@ -13,13 +13,14 @@ from beezdesktop.theme import (
     page_header, card, stat_card, status_badge,
     action_card, info_row, spacer,
 )
+from beezdesktop.views.lifecycle import ViewLifecycle
 
 
-class DashboardView:
+class DashboardView(ViewLifecycle):
     """Dashboard view with quick actions and overview."""
 
     def __init__(self, app):
-        self.app = app
+        ViewLifecycle.__init__(self, app)
 
     def build(self) -> toga.Box:
         container = toga.Box(style=Pack(direction=COLUMN, flex=1))
