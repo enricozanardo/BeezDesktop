@@ -5,6 +5,7 @@ View and edit the .beez network configuration from within the app.
 On first launch, loads bundled defaults. Saves to ~/.beez for persistence.
 """
 
+import asyncio
 import logging
 import toga
 from toga.style import Pack
@@ -50,16 +51,45 @@ class SettingsView(ViewLifecycle):
             style=Pack(font_size=Font.SIZE_CAPTION, color=Colors.TEXT_MUTED, padding=(0, 0, Spacing.MD, 0)),
         ))
 
-        # Network section
+        # The section cards realise ~10 native TextInputs + buttons.
+        # Attach them incrementally so the view switch stays inside the
+        # 250ms UI-thread budget (audit D-04/D-05).
+        self._sections_box = toga.Box(style=Pack(direction=COLUMN))
+        container.add(self._sections_box)
+        self.spawn_task(self._populate_sections(), name="settings-sections")
+
+        return container
+
+    async def _populate_sections(self) -> None:
+        """Attach the settings body with a single repaint (see dashboard)."""
+        await asyncio.sleep(0)
+        if self._destroyed:
+            return
+
+        body = toga.Box(style=Pack(direction=COLUMN))
+        for build_section in (
+            self._network_card, self._zmq_card, self._logging_card,
+            self._security_card, self._logs_card, self._actions_row,
+        ):
+            body.add(build_section())
+
+        if self._destroyed:
+            return
+        self._sections_box.add(body)
+
+    def _network_card(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         net_card = card(title="Network", bg=Colors.BG_CARD)
         self.network_type_input = self._field(net_card, "Network Type",
             self._config.network.type if self._config else "default")
         dir_nodes = ", ".join(self._config.network.directory_nodes) if self._config else ""
         self.directory_nodes_input = self._field(net_card, "Directory Nodes (comma-separated)", dir_nodes)
-        container.add(net_card)
-        container.add(spacer(Spacing.SM))
+        wrapper.add(net_card)
+        wrapper.add(spacer(Spacing.SM))
+        return wrapper
 
-        # ZMQ section
+    def _zmq_card(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         zmq_card = card(title="ZMQ", bg=Colors.BG_CARD)
         self.zmq_tx_port_input = self._field(zmq_card, "TX Port",
             str(self._config.zmq.tx_port) if self._config else "5555")
@@ -67,26 +97,32 @@ class SettingsView(ViewLifecycle):
             str(self._config.zmq.consensus_port) if self._config else "5557")
         self.zmq_timeout_input = self._field(zmq_card, "Timeout (ms)",
             str(self._config.zmq.timeout_ms) if self._config else "5000")
-        container.add(zmq_card)
-        container.add(spacer(Spacing.SM))
+        wrapper.add(zmq_card)
+        wrapper.add(spacer(Spacing.SM))
+        return wrapper
 
-        # Logging section
+    def _logging_card(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         log_card = card(title="Logging", bg=Colors.BG_CARD)
         self.log_level_input = self._field(log_card, "Level",
             self._config.logging.level if self._config else "INFO")
-        container.add(log_card)
-        container.add(spacer(Spacing.SM))
+        wrapper.add(log_card)
+        wrapper.add(spacer(Spacing.SM))
+        return wrapper
 
-        # Security section
+    def _security_card(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         sec_card = card(title="Security", bg=Colors.BG_CARD)
         tls_val = str(self._config.security.enable_tls).lower() if self._config else "false"
         self.tls_input = self._field(sec_card, "Enable TLS", tls_val)
         self.rate_limit_input = self._field(sec_card, "Rate Limit",
             str(self._config.security.rate_limit) if self._config else "1000")
-        container.add(sec_card)
-        container.add(spacer(Spacing.SM))
+        wrapper.add(sec_card)
+        wrapper.add(spacer(Spacing.SM))
+        return wrapper
 
-        # Logs section
+    def _logs_card(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         log_card = card(title="Application Logs", bg=Colors.BG_CARD)
         log_path = str(get_log_path())
         log_path_row = toga.Box(style=Pack(direction=ROW, padding=Spacing.XS, alignment="center"))
@@ -105,24 +141,25 @@ class SettingsView(ViewLifecycle):
         open_log_btn_row.add(toga.Box(style=Pack(width=Spacing.SM)))
         open_log_btn_row.add(secondary_button("Open Log Folder", self._on_open_log_folder))
         log_card.add(open_log_btn_row)
-        container.add(log_card)
-        container.add(spacer(Spacing.MD))
+        wrapper.add(log_card)
+        wrapper.add(spacer(Spacing.MD))
+        return wrapper
 
-        # Action buttons
+    def _actions_row(self) -> toga.Box:
+        wrapper = toga.Box(style=Pack(direction=COLUMN))
         btn_row = toga.Box(style=Pack(direction=ROW))
         btn_row.add(primary_button("Save & Apply", self._on_save))
         btn_row.add(toga.Box(style=Pack(width=Spacing.SM)))
         btn_row.add(secondary_button("Reset to Defaults", self._on_reset))
-        container.add(btn_row)
+        wrapper.add(btn_row)
 
         # Status
         self.status_label = toga.Label(
             "",
             style=Pack(padding=(Spacing.MD, 0), font_size=Font.SIZE_BODY, color=Colors.TEXT_SECONDARY),
         )
-        container.add(self.status_label)
-
-        return container
+        wrapper.add(self.status_label)
+        return wrapper
 
     # ------------------------------------------------------------------ #
 
