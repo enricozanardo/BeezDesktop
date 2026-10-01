@@ -4,6 +4,8 @@ Dashboard View
 Landing page with wallet summary, network stats, and quick actions.
 """
 
+import asyncio
+
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -27,17 +29,47 @@ class DashboardView(ViewLifecycle):
 
         container.add(page_header("Dashboard", "Welcome to the Beez Network"))
 
-        if self.app.client and self.app.client.is_wallet_connected():
-            container.add(self._wallet_summary())
-            container.add(spacer(Spacing.SECTION_GAP))
-
-        container.add(self._stat_cards_row())
-        container.add(spacer(Spacing.SECTION_GAP))
-        container.add(self._quick_actions_section())
-        container.add(spacer(Spacing.SECTION_GAP))
-        container.add(self._network_health_section())
+        # Cards are attached incrementally so the view switch stays
+        # inside the 250ms UI-thread budget (audit D-04/D-05).
+        self._body_box = toga.Box(style=Pack(direction=COLUMN))
+        container.add(self._body_box)
+        self.spawn_task(self._populate_sections(), name="dashboard-sections")
 
         return container
+
+    async def _populate_sections(self) -> None:
+        """Attach the dashboard body with a single repaint.
+
+        One ``await`` lets the event loop paint the skeleton (header)
+        first; the body is then built fully detached and attached with
+        a single ``add`` so the content appears in one repaint instead
+        of card-by-card (review feedback: incremental attach reads as
+        flickering).
+        """
+        await asyncio.sleep(0)
+        if self._destroyed:
+            return
+
+        sections = []
+        if self.app.client and self.app.client.is_wallet_connected():
+            sections.append(self._wallet_summary)
+        sections.extend([
+            self._stat_cards_row,
+            self._quick_actions_section,
+            self._network_health_section,
+        ])
+
+        body = toga.Box(style=Pack(direction=COLUMN))
+        first = True
+        for build_section in sections:
+            if not first:
+                body.add(spacer(Spacing.SECTION_GAP))
+            first = False
+            body.add(build_section())
+
+        if self._destroyed:
+            return
+        self._body_box.add(body)
 
     def _wallet_summary(self) -> toga.Box:
         wallet = self.app.client.get_current_wallet()

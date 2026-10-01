@@ -5,6 +5,8 @@ Network status: node counts, connectivity, health.
 Uses SearchableTable for browsing node lists with search and pagination.
 """
 
+import asyncio
+
 import toga
 from toga.style import Pack
 from toga.style.pack import COLUMN, ROW
@@ -38,7 +40,14 @@ class NetworkView(ViewLifecycle):
         container.add(spacer(Spacing.SM))
         container.add(self._stat_row())
         container.add(spacer(Spacing.SECTION_GAP))
-        container.add(self._node_lists())
+
+        # Node tables are the expensive part of this view (each
+        # SearchableTable realises a native toga.Table + inputs). Attach
+        # them incrementally from an asyncio task so a view switch never
+        # blocks the UI thread for the whole batch (audit D-04/D-05).
+        self._lists_section = toga.Box(style=Pack(direction=COLUMN))
+        container.add(self._lists_section)
+        self.spawn_task(self._populate_node_lists(), name="network-node-lists")
 
         return container
 
@@ -79,8 +88,11 @@ class NetworkView(ViewLifecycle):
             row.add(stat_card(label, val, color=color, bg=bg))
         return row
 
-    def _node_lists(self) -> toga.Box:
-        section = toga.Box(style=Pack(direction=COLUMN))
+    async def _populate_node_lists(self) -> None:
+        """Attach the node tables with a single repaint (see dashboard)."""
+        await asyncio.sleep(0)
+        if self._destroyed:
+            return
 
         node_groups = [
             ("Storage Nodes", self.app.state.active_nodes if self.app.state else []),
@@ -89,51 +101,58 @@ class NetworkView(ViewLifecycle):
             ("Smart Nodes", self.app.state.smart_nodes if self.app.state else []),
         ]
 
+        body = toga.Box(style=Pack(direction=COLUMN))
+        any_nodes = False
         for group_name, nodes in node_groups:
             if not nodes:
                 continue
+            any_nodes = True
+            body.add(self._build_group_card(group_name, nodes))
+            body.add(spacer(Spacing.SM))
 
-            group_card = card(title=f"{group_name} ({len(nodes)})", bg=Colors.BG_CARD)
-
-            data = []
-            for n in nodes:
-                if isinstance(n, dict):
-                    node_id = n.get("node_id", "unknown")
-                    ip = n.get("ip", "unknown")
-                    rep = n.get("reputation", 100.0)
-                    wallet = n.get("wallet_address", "")
-                    data.append((
-                        node_id[:20] + ("..." if len(node_id) > 20 else ""),
-                        ip,
-                        f"{rep:.0f}",
-                        (wallet[:14] + "...") if wallet else "--",
-                    ))
-
-            if data:
-                st = SearchableTable(
-                    headings=["Node ID", "IP", "Reputation", "Wallet"],
-                    page_size=10,
-                    search_placeholder=f"Search {group_name.lower()}...",
-                    table_height=180,
-                )
-                st.set_data(data)
-                group_card.add(st.box)
-            else:
-                group_card.add(toga.Label(
-                    "No detailed node data available",
-                    style=Pack(font_size=Font.SIZE_SMALL, color=Colors.TEXT_MUTED),
-                ))
-
-            section.add(group_card)
-            section.add(spacer(Spacing.SM))
-
-        if not any(nodes for _, nodes in node_groups):
-            section.add(toga.Label(
+        if not any_nodes:
+            body.add(toga.Label(
                 "No nodes discovered yet. The consensus listener refreshes every ~30 s.",
                 style=Pack(font_size=Font.SIZE_BODY, color=Colors.TEXT_MUTED, padding=Spacing.MD),
             ))
 
-        return section
+        if self._destroyed:
+            return
+        self._lists_section.add(body)
+
+    def _build_group_card(self, group_name: str, nodes: list) -> toga.Box:
+        group_card = card(title=f"{group_name} ({len(nodes)})", bg=Colors.BG_CARD)
+
+        data = []
+        for n in nodes:
+            if isinstance(n, dict):
+                node_id = n.get("node_id", "unknown")
+                ip = n.get("ip", "unknown")
+                rep = n.get("reputation", 100.0)
+                wallet = n.get("wallet_address", "")
+                data.append((
+                    node_id[:20] + ("..." if len(node_id) > 20 else ""),
+                    ip,
+                    f"{rep:.0f}",
+                    (wallet[:14] + "...") if wallet else "--",
+                ))
+
+        if data:
+            st = SearchableTable(
+                headings=["Node ID", "IP", "Reputation", "Wallet"],
+                page_size=10,
+                search_placeholder=f"Search {group_name.lower()}...",
+                table_height=180,
+            )
+            st.set_data(data)
+            group_card.add(st.box)
+        else:
+            group_card.add(toga.Label(
+                "No detailed node data available",
+                style=Pack(font_size=Font.SIZE_SMALL, color=Colors.TEXT_MUTED),
+            ))
+
+        return group_card
 
     def _total_nodes(self) -> int:
         if not self.app.state:

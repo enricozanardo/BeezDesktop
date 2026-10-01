@@ -78,10 +78,39 @@ class BeezDesktopApp(toga.App):
 
         self.main_window.content = root
         self.main_window.show()
+        self._enable_double_buffering()
 
         self._init_config()
         self._start_background_services()
         self._auto_load_wallet()
+
+    def _enable_double_buffering(self) -> None:
+        """Windows-only: enable DoubleBuffered on the content containers.
+
+        WinForms panels are not double-buffered by default, so every
+        relayout repaints child controls one by one (visible flicker
+        during incremental view population). DoubleBuffered is a
+        protected property, hence the .NET reflection. Scoped to the
+        scroll/content containers only - unlike WS_EX_COMPOSITED this
+        does not change how the whole window is painted.
+        No-op on other platforms or on any failure.
+        """
+        import sys
+        if sys.platform != "win32":
+            return
+        try:
+            from System.Reflection import BindingFlags  # type: ignore
+            flags = BindingFlags.Instance | BindingFlags.NonPublic
+            for widget in (self._scroll, self.content_area):
+                native = getattr(widget._impl, "native", None)
+                if native is None:
+                    continue
+                prop = native.GetType().GetProperty("DoubleBuffered", flags)
+                if prop is not None:
+                    prop.SetValue(native, True, None)
+            logger.info("[UI] DoubleBuffered enabled on content containers (anti-flicker)")
+        except Exception as exc:
+            logger.warning("[UI] Could not enable double buffering: %s", exc)
 
     # ------------------------------------------------------------------ #
     # SIDEBAR
@@ -218,31 +247,39 @@ class BeezDesktopApp(toga.App):
         import time
         t0 = time.monotonic()
         self._clear_content()
+        t1 = time.monotonic()
         self.current_view = view_id
         self._set_active_nav(view_id)
 
         import importlib
         mod = importlib.import_module(view_class_path)
         cls = getattr(mod, view_class_name)
+        t2 = time.monotonic()
         view = cls(app=self)
         self._active_view = view
-        self.content_area.add(view.build())
+        built = view.build()
+        t3 = time.monotonic()
+        self.content_area.add(built)
 
         # Reset scroll position to top
         if hasattr(self, '_scroll'):
             self._scroll.position = (0, 0)
 
-        elapsed_ms = round((time.monotonic() - t0) * 1000)
+        t4 = time.monotonic()
+        elapsed_ms = round((t4 - t0) * 1000)
+        detail = "clear=%dms import=%dms build=%dms add=%dms" % (
+            (t1 - t0) * 1000, (t2 - t1) * 1000, (t3 - t2) * 1000, (t4 - t3) * 1000,
+        )
         if elapsed_ms > 250:
             # Regression guard for audit D-04/D-05: a view switch should
             # never block the UI thread. If it does, something on the new
             # view is doing sync work in build() instead of spawning a worker.
             logger.warning(
-                "[NAV] slow view switch '%s' took %dms (>250ms budget)",
-                view_id, elapsed_ms,
+                "[NAV] slow view switch '%s' took %dms (>250ms budget) | %s",
+                view_id, elapsed_ms, detail,
             )
         else:
-            logger.debug("[NAV] view switch '%s' in %dms", view_id, elapsed_ms)
+            logger.info("[NAV] view switch '%s' in %dms | %s", view_id, elapsed_ms, detail)
 
     def _show_dashboard(self, widget=None):
         self._switch_view("dashboard", "beezdesktop.views.dashboard", "DashboardView", widget)
