@@ -200,13 +200,16 @@ jobs:
           set -euo pipefail
           briefcase create macOS
           briefcase build macOS
-          if [ "${{ steps.signing.outputs.ready }}" = "true" ] && [ "${{ steps.notary.outcome }}" = "success" ]; then
-            echo "Packaging signed + notarized macOS app for: $APPLE_SIGNING_IDENTITY"
-            briefcase package macOS \
-              --identity "$APPLE_SIGNING_IDENTITY"
-          else
-            echo "WARNING: notarytool unavailable; producing ad-hoc signed macOS app"
+          if [ "${{ steps.signing.outputs.ready }}" != "true" ]; then
+            echo "WARNING: signing secrets missing; producing ad-hoc signed macOS app"
             briefcase package macOS --adhoc-sign
+          elif [ "${{ steps.notary.outcome }}" = "success" ]; then
+            echo "Packaging signed + notarized macOS app for: $APPLE_SIGNING_IDENTITY"
+            briefcase package macOS --identity "$APPLE_SIGNING_IDENTITY"
+          else
+            echo "::error::notarytool failed (Apple Developer agreement missing/expired?). Shipping Developer ID signed app without notarization. Sign agreements at https://developer.apple.com/account then re-run."
+            echo "Packaging Developer ID signed (not notarized) app for: $APPLE_SIGNING_IDENTITY"
+            briefcase package macOS --identity "$APPLE_SIGNING_IDENTITY" --no-notarize
           fi
 
       # Always wipe the ephemeral keychain, even if the build failed.

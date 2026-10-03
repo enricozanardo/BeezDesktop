@@ -197,6 +197,8 @@ run the app — Gatekeeper will not block it.
 | `User interaction is not allowed` | `set-key-partition-list` step in CI didn't run / wrong password | Check that the `Import signing certificate` step succeeded; secrets may have changed |
 | `The signature of the binary is invalid` from Gatekeeper | Cert expired (Developer ID Application certs last 5 years) | Generate a new cert (steps 1.1–1.4), rerun step 3 |
 | Workflow says `falling back to --adhoc-sign` | One or more secrets are missing | `gh secret list` + diff against the table at the top |
+| `notarytool: 403 A required agreement is missing or has expired` | Apple Developer Program legal agreement not accepted | Sign the current agreements at https://developer.apple.com/account then re-run the tag build. CI still Developer-ID-signs the `.app` so Finder will not show “damaged”, but Gatekeeper will not show the publisher until notarization succeeds. |
+| Finder says the app is damaged / unidentified developer | The `.dmg` was ad-hoc signed (unsigned for Gatekeeper) | Confirm CI used `--identity`, not `--adhoc-sign`. Ad-hoc builds downloaded from the internet are reported as damaged on modern macOS. |
 
 To rotate any single secret, just run `gh secret set <NAME>` again with the
 new value and re-trigger the workflow. There is no caching — every run
