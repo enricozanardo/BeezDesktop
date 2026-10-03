@@ -172,7 +172,9 @@ jobs:
       # `--team-id` is the Apple-ID + app-specific-password auth path;
       # mixing them makes notarytool refuse with "Cannot store both ...".
       - name: Configure notarytool keychain profile
+        id: notary
         if: steps.signing.outputs.ready == 'true'
+        continue-on-error: true
         run: |
           set -euo pipefail
           API_KEY_PATH="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
@@ -198,12 +200,12 @@ jobs:
           set -euo pipefail
           briefcase create macOS
           briefcase build macOS
-          if [ "${{ steps.signing.outputs.ready }}" = "true" ]; then
+          if [ "${{ steps.signing.outputs.ready }}" = "true" ] && [ "${{ steps.notary.outcome }}" = "success" ]; then
             echo "Packaging signed + notarized macOS app for: $APPLE_SIGNING_IDENTITY"
             briefcase package macOS \
               --identity "$APPLE_SIGNING_IDENTITY"
           else
-            echo "WARNING: producing ad-hoc signed macOS app (will not run on other machines)"
+            echo "WARNING: notarytool unavailable; producing ad-hoc signed macOS app"
             briefcase package macOS --adhoc-sign
           fi
 
