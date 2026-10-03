@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.6.6"
+version = "0.6.7"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -39,9 +39,9 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.6.6"
+version = "0.6.7"
 url = "https://beez.io"
-license.file = "LICENSE"
+license.file = "LICENSE.txt"
 author = "Enrico Zanardo"
 author_email = "ezanardo@stellab.it"
 
@@ -106,6 +106,7 @@ min_os_version = "11.0"
 # Windows-specific configuration
 [tool.briefcase.app.beezdesktop.windows]
 use_full_install_path = false
+# GUI subsystem: sys.stdout is None. Logging must not tee a null stream.
 
 # -- Code Signing (requires a code signing certificate) --
 # Purchase from DigiCert, Sectigo, or SSL.com (~$200-400/yr for OV, ~$400-600/yr for EV)

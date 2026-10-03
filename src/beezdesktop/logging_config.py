@@ -7,6 +7,9 @@ Log files are stored in ~/.beezdesktop/logs/ with automatic rotation
 
 All print() output from the app is also captured to the log file via
 a stdout/stderr tee, ensuring nothing is lost even from third-party libs.
+
+Windows GUI (pythonw / Briefcase) often has sys.__stdout__ is None.
+Teeing that used to crash the process before any window appeared.
 """
 
 import logging
@@ -23,7 +26,7 @@ _initialized = False
 
 
 class _TeeStream:
-    """Writes to both the original stream and a logger."""
+    """Writes to both the original stream (if any) and a logger."""
 
     def __init__(self, original, logger: logging.Logger, level: int):
         self._original = original
@@ -32,14 +35,24 @@ class _TeeStream:
         self._buf = ""
 
     def write(self, text: str):
-        self._original.write(text)
+        if self._original is not None:
+            try:
+                self._original.write(text)
+            except Exception:
+                pass
         if text and text.strip():
             self._logger.log(self._level, text.rstrip())
 
     def flush(self):
-        self._original.flush()
+        if self._original is not None:
+            try:
+                self._original.flush()
+            except Exception:
+                pass
 
     def fileno(self):
+        if self._original is None:
+            raise OSError(9, "Bad file descriptor")
         return self._original.fileno()
 
     def isatty(self):
@@ -84,12 +97,13 @@ def setup_logging(level: str = "DEBUG") -> logging.Logger:
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    ch = logging.StreamHandler(stream=sys.__stdout__)
-    ch.setLevel(log_level)
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
+    orig_out = sys.__stdout__ if sys.__stdout__ is not None else sys.stdout
+    if orig_out is not None:
+        ch = logging.StreamHandler(stream=orig_out)
+        ch.setLevel(log_level)
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
 
-    # Tee stdout/stderr so print() calls also land in the log file
     tee_logger = logging.getLogger("beezdesktop.stdout")
     tee_logger.setLevel(logging.DEBUG)
     tee_logger.propagate = False
@@ -102,8 +116,11 @@ def setup_logging(level: str = "DEBUG") -> logging.Logger:
     ))
     tee_logger.addHandler(tee_fh)
 
-    sys.stdout = _TeeStream(sys.__stdout__, tee_logger, logging.INFO)
-    sys.stderr = _TeeStream(sys.__stderr__, tee_logger, logging.ERROR)
+    orig_err = sys.__stderr__ if sys.__stderr__ is not None else sys.stderr
+    if orig_out is not None:
+        sys.stdout = _TeeStream(orig_out, tee_logger, logging.INFO)
+    if orig_err is not None:
+        sys.stderr = _TeeStream(orig_err, tee_logger, logging.ERROR)
 
     _initialized = True
 

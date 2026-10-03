@@ -20,11 +20,11 @@ logger = setup_logging()
 
 try:
     from shared.client_core import BeezClientCore, ClientState, Wallet
-    from shared.client_core.zmq import start_consensus_listener
-except ImportError as e:
+except Exception as e:
     logger.warning("Could not import shared.client_core: %s", e)
     BeezClientCore = None
     ClientState = None
+    Wallet = None
 
 from beezdesktop import __version__
 from beezdesktop.theme import Colors, Font, Spacing, NAV_ICONS, SIDEBAR_WIDTH
@@ -331,6 +331,7 @@ class BeezDesktopApp(toga.App):
                     chain = len(self.state.chain_nodes)
                     logger.debug("Consensus update: %d storage, %d chain nodes", storage, chain)
 
+                from shared.client_core.zmq import start_consensus_listener
                 start_consensus_listener(state=self.state, callback=on_consensus)
                 logger.info("Consensus listener started")
             except Exception as e:
@@ -374,4 +375,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main().main_loop()
+    try:
+        main().main_loop()
+    except Exception:
+        import traceback
+        from pathlib import Path
+        crash = Path.home() / ".beezdesktop" / "crash.log"
+        crash.parent.mkdir(parents=True, exist_ok=True)
+        crash.write_text(traceback.format_exc(), encoding="utf-8")
+        raise
