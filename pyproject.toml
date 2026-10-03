@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "beezdesktop"
-version = "0.6.5"
+version = "0.6.6"
 description = "Beez Desktop Client"
 requires-python = ">=3.11"
 dependencies = [
@@ -39,7 +39,7 @@ where = ["src"]
 [tool.briefcase]
 project_name = "BeezDesktop"
 bundle = "io.beez"
-version = "0.6.5"
+version = "0.6.6"
 url = "https://beez.io"
 license.file = "LICENSE"
 author = "Enrico Zanardo"
@@ -81,7 +81,7 @@ system_requires = [
 
 # macOS-specific configuration
 [tool.briefcase.app.beezdesktop.macOS]
-universal_build = true
+universal_build = false
 min_os_version = "11.0"
 
 # Code signing + notarization for macOS are wired in
